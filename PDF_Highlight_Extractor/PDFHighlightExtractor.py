@@ -46,9 +46,19 @@ def extract_highlighted_text(pdf_path, output_file):
 			annotations = page.annots()
 			if annotations:
 				for annot in annotations:
-					if annot.type[0] == 8:
-						text = page.get_text("text", annot.rect)
-						highlighted_texts.append(text)
+					if annot.type[0] == 8:  # Highlight annotation type
+						# Initialize an accumulator for the text in this annotation
+						annotation_text = ""
+						quads = annot.vertices
+						for i in range(0, len(quads), 4):
+							quad = fitz.Quad(quads[i: i + 4])
+							rect = quad.rect
+							text = page.get_text("text", clip=rect).strip()
+							annotation_text += text + " "  # Accumulate the text
+
+						# Add the complete text of this annotation to the list
+						highlighted_texts.append(annotation_text + "\n")
+
 	with open(output_file, 'w', encoding='utf-8') as file:
 		for text in highlighted_texts:
 			file.write(text + "\n")
