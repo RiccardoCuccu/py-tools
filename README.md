@@ -20,3 +20,16 @@ pip install PyMuPDF
 ```
 
 Note: tkinter is typically included in standard Python installations. If it's not present in your environment, refer to Python's official documentation for installation instructions.
+
+## RDACalculator.py
+**Purpose:** `RDACalculator.py` is a script with a GUI for converting milligrams of vitamins and minerals into their respective Recommended Dietary Allowance (RDA) percentages. Specifically, it focuses on converting milligrams of Vitamin A, Vitamin C, Calcium, and Iron, which are the nutrients commonly required by the MyFitnessPal platform when adding or modifying foods in its database.
+
+### How it Works
+- The GUI allows users to input the milligram values of Vitamin A, Vitamin C, Iron, and Calcium.
+- On clicking the 'Calculate' button, the script calculates the RDA percentages based on the input values.
+- The results are displayed in the same window, showing how much each nutrient contributes to the daily recommended intake.
+
+### Installation
+`RDACalculator.py` requires tkinter for the GUI, which is usually included in standard Python installations. If tkinter is not installed, refer to Python's official documentation for guidance.
+
+Feel free to explore, use, and contribute to the development of these tools!
