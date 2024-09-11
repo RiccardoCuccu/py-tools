@@ -1,0 +1,4 @@
+# Ignore folders related to model files, audio, and transcripts
+model/
+audio/
+transcript/
