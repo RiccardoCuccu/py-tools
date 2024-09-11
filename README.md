@@ -51,7 +51,7 @@ pip install requests beautifulsoup4
 Once the dependencies are installed, you can run the script and provide the URL of the webpage you wish to analyze.
 
 ## [Podcast_Transcriber](https://github.com/RiccardoCuccu/py-tools/blob/main/Podcast_Transcriber/main.py)
-**Purpose:** `Podcast_Transcriber.py` is a tool designed to download and transcribe audio from podcast episodes available on Apple Podcasts. It automates the entire process of retrieving podcast metadata, downloading the episode audio, and converting it into a text transcript using the Vosk speech recognition engine.
+**Purpose:** `Podcast_Transcriber` is a tool designed to download and transcribe audio from podcast episodes available on Apple Podcasts. It automates the entire process of retrieving podcast metadata, downloading the episode audio, and converting it into a text transcript using the Vosk speech recognition engine.
 
 ### How it Works
 - The script first extracts the podcast ID and episode title from an Apple Podcast URL using the iTunes API. It fetches relevant metadata, including the podcast's RSS feed, which contains the necessary details about the episode.
