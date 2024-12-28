@@ -2,7 +2,18 @@
 
 Welcome to my "Python Random Tools" repository! This is a personal collection of diverse Python scripts that I've developed. The goal of this repository is to offer a range of handy tools for various tasks. These scripts are free to use and can be a great resource for anyone looking to solve practical problems with Python or just exploring different aspects of the language. Feel free to explore, use, and contribute to the development of these tools!
 
-## [pdf_highlight_extractor.py](https://github.com/RiccardoCuccu/py-tools/blob/main/pdf_highlight_extractor/pdf_highlight_extractor.py)
+## [merge_python_files](https://github.com/RiccardoCuccu/py-tools/blob/main/merge_python_files/merge_python_files.py)
+**Purpose:** `merge_python_files.py` is a script designed to consolidate multiple Python files from a specified directory into a single Python file. The goal is to create a unified executable file that merges the code from all `.py` files in the folder. If a `main.py` file is present, it is placed at the end of the merged file to ensure proper execution order.
+
+### How it Works
+- The script begins by scanning the specified folder for Python files. It identifies all `.py` files in the directory and stores them in a list, with the exception of `main.py`, which is treated separately.
+- After gathering the files, the script writes their contents to a new output file. It first appends the contents of all Python files except `main.py` and adds a header comment to indicate the original file name. Once all other files have been written, it appends the contents of `main.py` (if present) at the end to ensure that any main execution logic is placed last.
+- The merged content is written into a single Python file specified by the user. This output file can then be used as a consolidated version of all the Python scripts in the directory.
+
+### Installation
+No external dependencies are required to run this script. It operates entirely using Python's standard library.
+
+## [pdf_highlight_extractor](https://github.com/RiccardoCuccu/py-tools/blob/main/pdf_highlight_extractor/pdf_highlight_extractor.py)
 **Purpose:** `pdf_highlight_extractor.py` is an enhanced script with a basic GUI designed to extract highlighted text from PDF files. The script reads highlighted sections from the selected PDF file and saves them into a text file with the same name, facilitating easy review and referencing.
 
 ### How it Works
@@ -20,35 +31,6 @@ pip install PyMuPDF
 ```
 
 Note: tkinter is typically included in standard Python installations. If it's not present in your environment, refer to Python's official documentation for installation instructions.
-
-## [rda_calculator.py](https://github.com/RiccardoCuccu/py-tools/blob/main/rda_calculator/rda_calculator.py)
-**Purpose:** `rda_calculator.py` is a script with a GUI for converting milligrams of vitamins and minerals into their respective Recommended Dietary Allowance (RDA) percentages. Specifically, it focuses on converting milligrams of Vitamin A, Vitamin C, Calcium, and Iron, which are the nutrients commonly required by the MyFitnessPal platform when adding or modifying foods in its database.
-
-### How it Works
-- The GUI allows users to input the milligram values of Vitamin A, Vitamin C, Iron, and Calcium.
-- On clicking the 'Calculate' button, the script calculates the RDA percentages based on the input values.
-- The results are displayed in the same window, showing how much each nutrient contributes to the daily recommended intake.
-
-### Installation
-`rda_calculator.py` requires tkinter for the GUI, which is usually included in standard Python installations. If tkinter is not installed, refer to [Python's official tkinter documentation](https://docs.python.org/3/library/tkinter.html) for guidance.
-
-## [webpage_carbon_dating.py](https://github.com/RiccardoCuccu/py-tools/blob/main/webpage_carbon_dating/webpage_carbon_dating.py)
-**Purpose:** `webpage_carbon_dating.py` is a script designed to retrieve the oldest recorded publication date of a webpage. This script uses `requests` to fetch the HTML of a given webpage and `BeautifulSoup` to parse it and search for metadata tags that usually contain the publication date (e.g., `article:published_time`, `datePublished`, etc.). If found, it returns the date of publication.
-
-### How it Works
-- The script sends an HTTP request to retrieve the HTML of the webpage.
-- It then parses the HTML content to search for specific meta tags or `<time>` elements that typically store publication dates.
-- Once found, it extracts and returns the date in the `YYYY-MM-DD` format.
-- If no publication date is found, it returns a message indicating that the metadata is not available.
-
-### Installation
-To use `webpage_carbon_dating.py`, you'll need to install the following Python libraries:
-
-```
-pip install requests beautifulsoup4
-```
-
-Once the dependencies are installed, you can run the script and provide the URL of the webpage you wish to analyze.
 
 ## [podcast_transcriber](https://github.com/RiccardoCuccu/py-tools/blob/main/podcast_transcriber/main.py)
 **Purpose:** `podcast_transcriber` is a tool designed to download and transcribe audio from podcast episodes available on Apple Podcasts. It automates the entire process of retrieving podcast metadata, downloading the episode audio, and converting it into a text transcript using the Vosk speech recognition engine.
@@ -72,16 +54,16 @@ Moreover, it is necessary to download a Vosk speech recognition model. You can f
 
 Once everything is installed, you can run the main script and provide the link to the Apple Podcasts episode you wish to transcribe, and the script will handle the rest.
 
-## [merge_python_files](https://github.com/RiccardoCuccu/py-tools/blob/main/merge_python_files/merge_python_files.py)
-**Purpose:** `merge_python_files.py` is a script designed to consolidate multiple Python files from a specified directory into a single Python file. The goal is to create a unified executable file that merges the code from all `.py` files in the folder. If a `main.py` file is present, it is placed at the end of the merged file to ensure proper execution order.
+## [rda_calculator](https://github.com/RiccardoCuccu/py-tools/blob/main/rda_calculator/rda_calculator.py)
+**Purpose:** `rda_calculator.py` is a script with a GUI for converting milligrams of vitamins and minerals into their respective Recommended Dietary Allowance (RDA) percentages. Specifically, it focuses on converting milligrams of Vitamin A, Vitamin C, Calcium, and Iron, which are the nutrients commonly required by the MyFitnessPal platform when adding or modifying foods in its database.
 
 ### How it Works
-- The script begins by scanning the specified folder for Python files. It identifies all `.py` files in the directory and stores them in a list, with the exception of `main.py`, which is treated separately.
-- After gathering the files, the script writes their contents to a new output file. It first appends the contents of all Python files except `main.py` and adds a header comment to indicate the original file name. Once all other files have been written, it appends the contents of `main.py` (if present) at the end to ensure that any main execution logic is placed last.
-- The merged content is written into a single Python file specified by the user. This output file can then be used as a consolidated version of all the Python scripts in the directory.
+- The GUI allows users to input the milligram values of Vitamin A, Vitamin C, Iron, and Calcium.
+- On clicking the 'Calculate' button, the script calculates the RDA percentages based on the input values.
+- The results are displayed in the same window, showing how much each nutrient contributes to the daily recommended intake.
 
 ### Installation
-No external dependencies are required to run this script. It operates entirely using Python's standard library.
+`rda_calculator.py` requires tkinter for the GUI, which is usually included in standard Python installations. If tkinter is not installed, refer to [Python's official tkinter documentation](https://docs.python.org/3/library/tkinter.html) for guidance.
 
 ## [steam_cloud_downloader](https://github.com/RiccardoCuccu/py-tools/blob/main/steam_cloud_downloader/steam_cloud_downloader.py)
 **Purpose:** `steam_cloud_downloader.py` is a script designed to automate the process of downloading game save files stored in Steam Cloud for all games linked to a Steam account. The tool also organizes the downloaded files into folders named after the respective games in snake_case format and archives the data for backup purposes.
@@ -101,3 +83,21 @@ pip install selenium requests beautifulsoup4
 ```
 
 Additionally, you must have a recent version of Google Chrome installed for Selenium automation.
+
+## [webpage_carbon_dating](https://github.com/RiccardoCuccu/py-tools/blob/main/webpage_carbon_dating/webpage_carbon_dating.py)
+**Purpose:** `webpage_carbon_dating.py` is a script designed to retrieve the oldest recorded publication date of a webpage. This script uses `requests` to fetch the HTML of a given webpage and `BeautifulSoup` to parse it and search for metadata tags that usually contain the publication date (e.g., `article:published_time`, `datePublished`, etc.). If found, it returns the date of publication.
+
+### How it Works
+- The script sends an HTTP request to retrieve the HTML of the webpage.
+- It then parses the HTML content to search for specific meta tags or `<time>` elements that typically store publication dates.
+- Once found, it extracts and returns the date in the `YYYY-MM-DD` format.
+- If no publication date is found, it returns a message indicating that the metadata is not available.
+
+### Installation
+To use `webpage_carbon_dating.py`, you'll need to install the following Python libraries:
+
+```
+pip install requests beautifulsoup4
+```
+
+Once the dependencies are installed, you can run the script and provide the URL of the webpage you wish to analyze.
