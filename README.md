@@ -2,6 +2,23 @@
 
 Welcome to my "Python Random Tools" repository! This is a personal collection of diverse Python scripts that I've developed. The goal of this repository is to offer a range of handy tools for various tasks. These scripts are free to use and can be a great resource for anyone looking to solve practical problems with Python or just exploring different aspects of the language. Feel free to explore, use, and contribute to the development of these tools!
 
+## [bitcoin_fibonacci_log_chart](https://github.com/RiccardoCuccu/py-tools/blob/main/bitcoin_fibonacci_log_chart/bitcoin_fibonacci_log_chart.py)
+**Purpose:** `bitcoin_fibonacci_log_chart.py` is a visualization tool that plots the historical price of Bitcoin on a logarithmic scale. The chart includes Fibonacci retracement levels and marks all known Bitcoin halving events. It (hopefully) helps to recognize the trend in Bitcoin's price history.
+
+### How it Works
+- The script loads Bitcoin historical price data from a JSON file (`market-price.json`) that can be exported from [blockchain.com](https://www.blockchain.com/charts/market-price).
+- It converts the data into a time series and calculates Fibonacci retracement levels based on the all-time high and low.
+- It overlays horizontal lines for each Fibonacci level on a logarithmic price chart.
+- Vertical dashed lines are added to indicate the dates of Bitcoin halving events (2012, 2016, 2020, 2024).
+- The chart visualizes Bitcoin’s historical price behavior alongside technical reference levels and key protocol milestones.
+
+### Installation
+To use `bitcoin_fibonacci_log_chart.py`, you need to install the following Python libraries:
+
+```
+pip install pandas matplotlib
+```
+
 ## [merge_python_files](https://github.com/RiccardoCuccu/py-tools/blob/main/merge_python_files/merge_python_files.py)
 **Purpose:** `merge_python_files.py` is a script designed to consolidate multiple Python files from a specified directory into a single Python file. The goal is to create a unified executable file that merges the code from all `.py` files in the folder. If a `main.py` file is present, it is placed at the end of the merged file to ensure proper execution order.
 
