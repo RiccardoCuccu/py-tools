@@ -1,36 +1,3 @@
-"""
-Google Podcasts URL Decoder
-
-This script decodes Google Podcasts URLs to extract podcast episode information
-from RSS feeds. It supports both interactive mode and command-line arguments.
-
-USAGE:
-    1. Command-line argument:
-       python google_podcast_decoder.py "https://podcasts.google.com/feed/BASE64_FEED/episode/BASE64_EPISODE"
-    
-    2. Interactive mode (no arguments):
-       python google_podcast_decoder.py
-       Then paste the URL when prompted
-
-GOOGLE PODCASTS URL FORMAT:
-    https://podcasts.google.com/feed/{BASE64_ENCODED_FEED_URL}/episode/{BASE64_ENCODED_EPISODE_ID}
-    
-    Where:
-    - BASE64_ENCODED_FEED_URL: The RSS feed URL encoded in Base64
-    - BASE64_ENCODED_EPISODE_ID: The unique episode identifier encoded in Base64
-
-EXAMPLE:
-    python google_podcast_decoder.py "https://podcasts.google.com/feed/aHR0cHM6Ly93d3cuc3ByZWFrZXIuY29tL3Nob3cvMjIwNTc0Mi9lcGlzb2Rlcy9mZWVk/episode/YTNlNjI2YjQtNjg2Zi00ZmFjLTgzZDEtYWJiMmM4NDdjMDM0"
-
-OUTPUT:
-    - Show information (title, description)
-    - Episode details (title, publication date, description, audio URL)
-    - Direct links to the episode
-
-REQUIREMENTS:
-    - requests library: pip install requests
-"""
-
 import requests
 import base64
 import sys
