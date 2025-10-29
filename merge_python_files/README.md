@@ -8,6 +8,13 @@
 - After gathering the files, the script writes their contents to a new output file. It first appends the contents of all Python files except `main.py` and adds a header comment to indicate the original file name. Once all other files have been written, it appends the contents of `main.py` (if present) at the end to ensure that any main execution logic is placed last.
 - The merged content is written into a single Python file specified by the user. This output file can then be used as a consolidated version of all the Python scripts in the directory.
 
+## Usage
+```
+python merge_python_files.py
+```
+
+Follow the prompts to specify the source directory and output file name.
+
 ## Installation
 
 No external dependencies are required to run this script. It operates entirely using Python's standard library.

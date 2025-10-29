@@ -10,6 +10,13 @@
 - The extracted text is saved to a new text file, named after the original PDF but with a `.txt` extension.
 - All operations and status messages are displayed in the script's GUI window.
 
+## Usage
+```
+python pdf_highlight_extractor.py
+```
+
+Select the PDF file through the GUI dialog.
+
 ## Installation
 
 To use `pdf_highlight_extractor.py`, you need to install PyMuPDF, a Python library that enables the script to read PDF files, and tkinter for the GUI. PyMuPDF can be installed using pip, the Python package installer. Run the following command in your terminal:

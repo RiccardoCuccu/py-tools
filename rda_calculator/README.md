@@ -8,6 +8,13 @@
 - On clicking the 'Calculate' button, the script calculates the RDA percentages based on the input values.
 - The results are displayed in the same window, showing how much each nutrient contributes to the daily recommended intake.
 
+## Usage
+```
+python rda_calculator.py
+```
+
+Enter nutrient values in the GUI and click Calculate.
+
 ## Installation
 
 `rda_calculator.py` requires tkinter for the GUI, which is usually included in standard Python installations. If tkinter is not installed, refer to [Python's official tkinter documentation](https://docs.python.org/3/library/tkinter.html) for guidance.

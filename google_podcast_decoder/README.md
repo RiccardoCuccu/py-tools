@@ -11,6 +11,13 @@
 - Once found, it extracts and displays comprehensive information including show details (title, description), episode details (title, publication date, description, audio URL), and direct links.
 - The script can be used either by providing the URL as a command-line argument or through an interactive prompt mode.
 
+## Usage
+```
+python google_podcasts_decoder.py "GOOGLE_PODCASTS_URL"
+```
+
+Or run without arguments for interactive mode.
+
 ## Installation
 
 To use `google_podcasts_decoder.py`, you'll need to install the following Python library:
@@ -18,7 +25,3 @@ To use `google_podcasts_decoder.py`, you'll need to install the following Python
 ```
 pip install requests
 ```
-
-Once the dependencies are installed, you can run the script in two ways:
-1. Command-line argument: `python google_podcasts_decoder.py "GOOGLE_PODCASTS_URL"`
-2. Interactive mode: `python google_podcasts_decoder.py` (then paste the URL when prompted)

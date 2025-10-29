@@ -9,6 +9,13 @@
 - Once found, it extracts and returns the date in the `YYYY-MM-DD` format.
 - If no publication date is found, it returns a message indicating that the metadata is not available.
 
+## Usage
+```
+python webpage_carbon_dating.py
+```
+
+Provide the webpage URL when prompted.
+
 ## Installation
 
 To use `webpage_carbon_dating.py`, you'll need to install the following Python libraries:
@@ -16,5 +23,3 @@ To use `webpage_carbon_dating.py`, you'll need to install the following Python l
 ```
 pip install requests beautifulsoup4
 ```
-
-Once the dependencies are installed, you can run the script and provide the URL of the webpage you wish to analyze.

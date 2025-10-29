@@ -11,6 +11,13 @@
 - It downloads all available files for each game into the corresponding folder, skipping games if their folders already contain files.
 - Once all downloads are complete, the script creates a ZIP archive of all downloaded files and cleans up the original folders to save space.
 
+## Usage
+```
+python steam_cloud_downloader.py
+```
+
+Log in to Steam when the browser window opens.
+
 ## Installation
 
 To use `steam_cloud_downloader.py`, you need to install the following Python libraries:

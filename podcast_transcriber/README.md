@@ -11,14 +11,21 @@
 - The audio file is transcribed using the Vosk engine. The KaldiRecognizer is initialized with the selected model, and the audio is processed frame by frame to generate the transcript. The final transcript is saved as a text file in a specified directory.
 - After the transcription, the script performs cleanup operations deleting the `__pycache__` directory.
 
+## Usage
+```
+python main.py
+```
+
+Provide the Apple Podcasts episode URL when prompted.
+
 ## Installation
 
 To use `podcast_transcriber`, you'll need to install the following Python libraries:
+
 ```
 pip install yt-dlp requests feedparser beautifulsoup4 vosk pydub
 ```
+
 Additionally, `ffmpeg` must be installed on your system and accessible via the command line. Follow the [official FFmpeg installation guide](https://ffmpeg.org/download.html) for your operating system.
 
 Moreover, it is necessary to download a Vosk speech recognition model. You can find and download the appropriate model from [https://alphacephei.com/vosk/models](https://alphacephei.com/vosk/models), then place the downloaded model in the `models` directory where the script will locate it.
-
-Once everything is installed, you can run the main script and provide the link to the Apple Podcasts episode you wish to transcribe, and the script will handle the rest.

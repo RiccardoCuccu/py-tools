@@ -10,6 +10,13 @@
 - Vertical dashed lines are added to indicate the dates of Bitcoin halving events (2012, 2016, 2020, 2024).
 - The chart visualizes Bitcoin's historical price behavior alongside technical reference levels and key protocol milestones.
 
+## Usage
+```
+python bitcoin_fibonacci_log_chart.py
+```
+
+Ensure `market-price.json` is in the same directory.
+
 ## Installation
 
 To use `bitcoin_fibonacci_log_chart.py`, you need to install the following Python libraries:
