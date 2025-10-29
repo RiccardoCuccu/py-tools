@@ -12,6 +12,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 - **[pdf_highlight_extractor](https://github.com/RiccardoCuccu/py-tools/blob/main/pdf_highlight_extractor/)** - GUI script to extract highlighted text from PDF files and save them to text files.
 
+- **[plagiarism_checker](https://github.com/RiccardoCuccu/py-tools/blob/main/plagiarism_checker/)** - Script to detect potential plagiarism in documents by searching online sources, downloading content and analyzing text similarity.
+
 - **[podcast_transcriber](https://github.com/RiccardoCuccu/py-tools/blob/main/podcast_transcriber/)** - Tool to download and transcribe audio from Apple Podcasts episodes using Vosk speech recognition.
 
 - **[rda_calculator](https://github.com/RiccardoCuccu/py-tools/blob/main/rda_calculator/)** - GUI script for converting milligrams of vitamins and minerals into RDA percentages for MyFitnessPal.
