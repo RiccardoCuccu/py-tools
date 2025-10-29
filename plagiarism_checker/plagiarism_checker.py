@@ -49,7 +49,7 @@ from datetime import datetime
 # Fix Windows console encoding issues
 if sys.platform == 'win32':
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[attr-defined]
     except AttributeError:
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
@@ -58,7 +58,7 @@ try:
     import requests
     from bs4 import BeautifulSoup
     from docx import Document
-    import fitz  # PyMuPDF
+    import fitz
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
     import nltk
@@ -84,22 +84,33 @@ except LookupError:
     nltk.download('stopwords', quiet=True)
 
 class PlagiarismChecker:
-    def __init__(self, doc_path, max_sources=30, min_phrase_words=8, extract_pages=None, page_position='middle', num_phrases=None):
+    def __init__(self, doc_path, max_sources=30, min_phrase_words=8, extract_pages=None, page_position='middle', num_phrases=None, use_apis=False, use_local=False):
         self.doc_path = Path(doc_path)
         self.max_sources = max_sources
         self.min_phrase_words = min_phrase_words
         self.extract_pages = extract_pages  # Number of pages to extract (None = all)
         self.page_position = page_position  # 'start', 'middle', or 'end'
         self.num_phrases = num_phrases  # Number of key phrases to extract (None = auto-scale)
+        self.use_apis = use_apis  # Use academic APIs (CrossRef, arXiv, Semantic Scholar)
+        self.use_local = use_local  # Use local reference files
         self.cache_dir = self.doc_path.parent / ".plagiarism_cache"
         self.cache_dir.mkdir(exist_ok=True)
         self.stop_words = set(stopwords.words('english'))
+
+        # Domains to exclude from web search when using APIs (to avoid duplicates)
+        self.api_domains = [
+            'arxiv.org', 'semanticscholar.org', 'crossref.org',
+            'doi.org', 'ncbi.nlm.nih.gov', 'pubmed'
+        ]
+
+        # Local references directory
+        self.local_references_dir = self.doc_path.parent / "local_references"
         
     def extract_text_from_docx(self):
         """Extract text from a Word document (optionally from specific pages)"""
         print(f"\n[1/5] Extracting text from document: {self.doc_path.name}")
         try:
-            doc = Document(self.doc_path)
+            doc = Document(str(self.doc_path))
             all_paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
 
             if self.extract_pages is None:
@@ -147,7 +158,7 @@ class PlagiarismChecker:
         """Extract all text from a PDF document"""
         print(f"\n[1/5] Extracting text from PDF: {self.doc_path.name}")
         try:
-            doc = fitz.open(self.doc_path)
+            doc = fitz.open(str(self.doc_path))  # type: ignore[attr-defined]
             text = ""
             for page in doc:
                 text += page.get_text()
@@ -158,6 +169,16 @@ class PlagiarismChecker:
             print(f"✗ Error reading PDF: {e}")
             sys.exit(1)
     
+    def extract_text_from_txt(self, file_path):
+        """Extract text from a plain text file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+            return text
+        except Exception as e:
+            print(f"✗ Error reading text file {file_path}: {e}")
+            return None
+
     def extract_text(self):
         """Extract text based on file extension"""
         if self.doc_path.suffix.lower() == '.docx':
@@ -168,6 +189,108 @@ class PlagiarismChecker:
             print(f"✗ Error: Unsupported file format: {self.doc_path.suffix}")
             print("Supported formats: .docx, .pdf")
             sys.exit(1)
+
+    def extract_text_from_file(self, file_path):
+        """Extract text from any supported file format"""
+        file_path = Path(file_path)
+        suffix = file_path.suffix.lower()
+
+        if suffix == '.docx':
+            try:
+                doc = Document(str(file_path))
+                return '\n'.join([para.text for para in doc.paragraphs if para.text.strip()])
+            except Exception as e:
+                print(f"  Warning: Failed to read {file_path.name}: {e}")
+                return None
+        elif suffix == '.pdf':
+            try:
+                pdf_doc = fitz.open(str(file_path))  # type: ignore[attr-defined]
+                text = ""
+                for page in pdf_doc:
+                    text += page.get_text()
+                pdf_doc.close()
+                return text
+            except Exception as e:
+                print(f"  Warning: Failed to read {file_path.name}: {e}")
+                return None
+        elif suffix == '.txt':
+            return self.extract_text_from_txt(file_path)
+        else:
+            print(f"  Warning: Unsupported format {suffix} for {file_path.name}")
+            return None
+
+    def find_local_references(self):
+        """Find all local reference files recursively"""
+        if not self.local_references_dir.exists():
+            return []
+
+        local_files = []
+        supported_extensions = ['.docx', '.pdf', '.txt']
+
+        # Search recursively for all supported files
+        for ext in supported_extensions:
+            local_files.extend(self.local_references_dir.rglob(f'*{ext}'))
+
+        return local_files
+
+    def load_local_sources(self):
+        """Load and process local reference files"""
+        print(f"\n[3b/5] Loading local reference files...")
+
+        # Check if directory exists
+        if not self.local_references_dir.exists():
+            print(f"  ⚠ Warning: Local references directory not found: {self.local_references_dir}")
+            print(f"  Expected location: {self.local_references_dir}")
+
+            # Ask user if they want to continue
+            while True:
+                response = input("  Continue with only online sources? (y/n): ").lower().strip()
+                if response in ['y', 'yes']:
+                    print()
+                    return []
+                elif response in ['n', 'no']:
+                    print("  Analysis cancelled by user.")
+                    sys.exit(0)
+                else:
+                    print("  Please enter 'y' or 'n'")
+
+        # Find all local files
+        local_files = self.find_local_references()
+
+        if not local_files:
+            print(f"  ⚠ Warning: No reference files found in {self.local_references_dir}")
+
+            while True:
+                response = input("  Continue with only online sources? (y/n): ").lower().strip()
+                if response in ['y', 'yes']:
+                    print()
+                    return []
+                elif response in ['n', 'no']:
+                    print("  Analysis cancelled by user.")
+                    sys.exit(0)
+                else:
+                    print("  Please enter 'y' or 'n'")
+
+        print(f"  Found {len(local_files)} local reference file(s)")
+
+        # Load and extract text from each file
+        local_sources = []
+        for i, file_path in enumerate(local_files, 1):
+            print(f"  Loading {i}/{len(local_files)}: {file_path.name}...")
+            text = self.extract_text_from_file(file_path)
+
+            if text and len(text) > 200:
+                local_sources.append({
+                    'file_path': str(file_path),
+                    'file_name': file_path.name,
+                    'content': text,
+                    'is_local': True
+                })
+            else:
+                print(f"    Warning: Skipped (content too short or failed to read)")
+
+        print(f"✓ Successfully loaded {len(local_sources)} local reference file(s)")
+        return local_sources
     
     def extract_key_phrases(self, text):
         """Extract key phrases from text for searching using TF-IDF scoring"""
@@ -213,7 +336,7 @@ class PlagiarismChecker:
                 sentence_scores = []
                 for i in range(len(filtered_sentences)):
                     # Convert sparse row to array and sum
-                    score = tfidf_matrix[i].toarray().sum()
+                    score = tfidf_matrix[i].toarray().sum()  # type: ignore[index]
                     sentence_scores.append((score, i))
 
                 # Sort by score (descending) to get most distinctive sentences
@@ -236,7 +359,100 @@ class PlagiarismChecker:
 
         print(f"✓ Selected {len(phrases)} key phrases for searching")
         return phrases
-    
+
+    def search_crossref(self, query):
+        """Search CrossRef API for academic papers"""
+        try:
+            # Use CrossRef REST API with polite pool
+            query_encoded = quote_plus(query[:100])
+            url = f"https://api.crossref.org/works?query={query_encoded}&rows=3&mailto=user@example.com"
+
+            headers = {'User-Agent': 'Mozilla/5.0 (PlagiarismChecker/1.0; mailto:user@example.com)'}
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                urls = []
+                for item in data.get('message', {}).get('items', []):
+                    # Get DOI URL
+                    doi = item.get('DOI')
+                    if doi:
+                        urls.append(f"https://doi.org/{doi}")
+                return urls
+            return []
+        except Exception as e:
+            print(f"  Warning: CrossRef search failed: {str(e)[:50]}")
+            return []
+
+    def search_arxiv(self, query):
+        """Search arXiv API for preprints"""
+        try:
+            query_encoded = quote_plus(query[:100])
+            url = f"http://export.arxiv.org/api/query?search_query=all:{query_encoded}&start=0&max_results=3"
+
+            response = requests.get(url, timeout=10)
+
+            if response.status_code == 200:
+                # Parse XML response
+                from xml.etree import ElementTree as ET
+                root = ET.fromstring(response.content)
+
+                urls = []
+                namespace = {'atom': 'http://www.w3.org/2005/Atom'}
+                for entry in root.findall('atom:entry', namespace):
+                    link = entry.find('atom:id', namespace)
+                    if link is not None and link.text:
+                        urls.append(link.text)
+                return urls
+            return []
+        except Exception as e:
+            print(f"  Warning: arXiv search failed: {str(e)[:50]}")
+            return []
+
+    def search_semantic_scholar(self, query):
+        """Search Semantic Scholar API for papers"""
+        try:
+            query_encoded = quote_plus(query[:100])
+            url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={query_encoded}&limit=3&fields=title,url,externalIds"
+
+            headers = {'User-Agent': 'PlagiarismChecker/1.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                urls = []
+                for paper in data.get('data', []):
+                    # Try to get DOI first, then URL
+                    external_ids = paper.get('externalIds', {})
+                    doi = external_ids.get('DOI')
+                    if doi:
+                        urls.append(f"https://doi.org/{doi}")
+                    elif paper.get('url'):
+                        urls.append(paper['url'])
+                return urls
+            return []
+        except Exception as e:
+            print(f"  Warning: Semantic Scholar search failed: {str(e)[:50]}")
+            return []
+
+    def search_with_apis(self, query):
+        """Search using academic APIs (CrossRef, arXiv, Semantic Scholar)"""
+        all_urls = []
+
+        # Search CrossRef
+        all_urls.extend(self.search_crossref(query))
+        time.sleep(0.5)  # Rate limiting
+
+        # Search arXiv
+        all_urls.extend(self.search_arxiv(query))
+        time.sleep(0.5)
+
+        # Search Semantic Scholar
+        all_urls.extend(self.search_semantic_scholar(query))
+        time.sleep(1)  # Semantic Scholar has 1 req/sec limit
+
+        return list(set(all_urls))  # Remove duplicates
+
     def search_online(self, query):
         """Perform a web search and return URLs (using DuckDuckGo HTML scraping)"""
         # Clean and encode query
@@ -263,9 +479,15 @@ class PlagiarismChecker:
                 href = result.get('href')
                 if href and href.startswith('http'):
                     # Filter out common non-content URLs
-                    if not any(x in href.lower() for x in ['youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']):
+                    excluded = ['youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']
+
+                    # Also exclude API domains if use_apis is enabled to avoid duplicates
+                    if self.use_apis:
+                        excluded.extend(self.api_domains)
+
+                    if not any(x in href.lower() for x in excluded):
                         results.append(href)
-            
+
             return results
         except Exception as e:
             print(f"  Warning: Search failed for query: {str(e)}")
@@ -273,20 +495,41 @@ class PlagiarismChecker:
     
     def search_all_phrases(self, phrases):
         """Search for all key phrases and collect unique URLs"""
-        print(f"\n[3/5] Searching online for similar content...")
+        if self.use_apis:
+            print(f"\n[3/5] Searching academic APIs and online sources...")
+        else:
+            print(f"\n[3/5] Searching online for similar content...")
+
         all_urls = set()
-        
+        api_count = 0
+        web_count = 0
+
         for i, phrase in enumerate(phrases, 1):
             print(f"  Searching phrase {i}/{len(phrases)}: \"{phrase[:50]}...\"")
-            urls = self.search_online(phrase)
-            all_urls.update(urls)
-            time.sleep(2)  # Rate limiting to avoid being blocked
-            
+
+            # Search academic APIs if enabled
+            if self.use_apis:
+                api_urls = self.search_with_apis(phrase)
+                all_urls.update(api_urls)
+                api_count += len(api_urls)
+
+            # Always search DuckDuckGo (will exclude API domains if use_apis=True)
+            web_urls = self.search_online(phrase)
+            all_urls.update(web_urls)
+            web_count += len(web_urls)
+
+            time.sleep(2)  # Rate limiting
+
             if len(all_urls) >= self.max_sources:
                 break
-        
+
         unique_urls = list(all_urls)[:self.max_sources]
-        print(f"✓ Found {len(unique_urls)} unique sources to analyze")
+
+        if self.use_apis:
+            print(f"✓ Found {len(unique_urls)} unique sources ({api_count} from APIs, {web_count} from web)")
+        else:
+            print(f"✓ Found {len(unique_urls)} unique sources to analyze")
+
         return unique_urls
     
     def _extract_text_from_html(self, html_content):
@@ -427,7 +670,7 @@ class PlagiarismChecker:
         try:
             vectorizer = TfidfVectorizer(stop_words='english', max_features=1000)
             tfidf_matrix = vectorizer.fit_transform([text1, text2])
-            similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+            similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]  # type: ignore[index]
             return similarity
         except:
             return 0.0
@@ -474,13 +717,25 @@ class PlagiarismChecker:
             matches = self.find_matching_segments(doc_text, source['content'])
             
             if overall_similarity >= 0.01 or len(matches) > 0:  # Include if similarity >= 1% or has matches
-                results.append({
-                    'url': source['url'],
-                    'title': source['title'],
+                result = {
                     'overall_similarity': overall_similarity,
                     'matching_segments': len(matches),
                     'matches': matches[:5]  # Keep top 5 matches
-                })
+                }
+
+                # Add fields based on source type
+                if source.get('is_local', False):
+                    result['is_local'] = True
+                    result['file_name'] = source.get('file_name', 'Unknown')
+                    result['file_path'] = source.get('file_path', 'N/A')
+                    result['url'] = source.get('file_path', '')  # For compatibility
+                    result['title'] = source.get('file_name', 'Local File')
+                else:
+                    result['is_local'] = False
+                    result['url'] = source.get('url', '')
+                    result['title'] = source.get('title', 'Unknown')
+
+                results.append(result)
         
         # Sort by similarity
         results.sort(key=lambda x: x['overall_similarity'], reverse=True)
@@ -488,8 +743,12 @@ class PlagiarismChecker:
         print(f"✓ Analysis complete")
         return results
     
-    def generate_report(self, results, doc_text, failed_sources=None):
+    def generate_report(self, results, doc_text, failed_sources=None, num_local_sources=0):
         """Generate and save plagiarism report"""
+        # Separate local and online sources
+        local_results = [r for r in results if r.get('is_local', False)]
+        online_results = [r for r in results if not r.get('is_local', False)]
+
         report_lines = []
         report_lines.append("=" * 80)
         report_lines.append("PLAGIARISM CHECK REPORT")
@@ -497,9 +756,9 @@ class PlagiarismChecker:
         report_lines.append(f"Document: {self.doc_path.name}")
         report_lines.append(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append(f"Document length: {len(doc_text)} characters")
-        report_lines.append(f"Sources analyzed: {len(results)}")
+        report_lines.append(f"Sources analyzed: {len(results)} ({len(local_results)} local, {len(online_results)} online)")
         if failed_sources:
-            report_lines.append(f"Sources failed to download: {len(failed_sources)}")
+            report_lines.append(f"Online sources failed to download: {len(failed_sources)}")
         report_lines.append("=" * 80)
         
         if not results:
@@ -523,22 +782,50 @@ class PlagiarismChecker:
             report_lines.append("\n" + "=" * 80)
             report_lines.append("DETAILED RESULTS")
             report_lines.append("=" * 80)
-            
-            for i, result in enumerate(results, 1):
-                report_lines.append(f"\nSOURCE #{i}")
-                report_lines.append(f"  URL: {result['url']}")
-                report_lines.append(f"  Title: {result['title']}")
-                report_lines.append(f"  Overall Similarity: {result['overall_similarity']*100:.1f}%")
-                report_lines.append(f"  Matching Segments: {result['matching_segments']}")
-                
-                if result['matches']:
-                    report_lines.append(f"\n  Sample Matches:")
-                    for j, match in enumerate(result['matches'][:3], 1):
-                        report_lines.append(f"\n  Match {j} (Similarity: {match['similarity']*100:.1f}%):")
-                        report_lines.append(f"    Document: \"{match['doc_text'][:150]}...\"")
-                        report_lines.append(f"    Source:   \"{match['source_text'][:150]}...\"")
-                
+
+            # LOCAL SOURCES SECTION
+            if local_results:
                 report_lines.append("\n" + "-" * 80)
+                report_lines.append("LOCAL REFERENCE FILES")
+                report_lines.append("-" * 80)
+
+                for i, result in enumerate(local_results, 1):
+                    report_lines.append(f"\nLOCAL SOURCE #{i}")
+                    report_lines.append(f"  File: {result.get('file_name', result.get('url', 'Unknown'))}")
+                    report_lines.append(f"  Path: {result.get('file_path', 'N/A')}")
+                    report_lines.append(f"  Overall Similarity: {result['overall_similarity']*100:.1f}%")
+                    report_lines.append(f"  Matching Segments: {result['matching_segments']}")
+
+                    if result['matches']:
+                        report_lines.append(f"\n  Sample Matches:")
+                        for j, match in enumerate(result['matches'][:3], 1):
+                            report_lines.append(f"\n  Match {j} (Similarity: {match['similarity']*100:.1f}%):")
+                            report_lines.append(f"    Document: \"{match['doc_text'][:150]}...\"")
+                            report_lines.append(f"    Source:   \"{match['source_text'][:150]}...\"")
+
+                    report_lines.append("\n" + "-" * 80)
+
+            # ONLINE SOURCES SECTION
+            if online_results:
+                report_lines.append("\n" + "-" * 80)
+                report_lines.append("ONLINE SOURCES")
+                report_lines.append("-" * 80)
+
+                for i, result in enumerate(online_results, 1):
+                    report_lines.append(f"\nONLINE SOURCE #{i}")
+                    report_lines.append(f"  URL: {result['url']}")
+                    report_lines.append(f"  Title: {result['title']}")
+                    report_lines.append(f"  Overall Similarity: {result['overall_similarity']*100:.1f}%")
+                    report_lines.append(f"  Matching Segments: {result['matching_segments']}")
+
+                    if result['matches']:
+                        report_lines.append(f"\n  Sample Matches:")
+                        for j, match in enumerate(result['matches'][:3], 1):
+                            report_lines.append(f"\n  Match {j} (Similarity: {match['similarity']*100:.1f}%):")
+                            report_lines.append(f"    Document: \"{match['doc_text'][:150]}...\"")
+                            report_lines.append(f"    Source:   \"{match['source_text'][:150]}...\"")
+
+                    report_lines.append("\n" + "-" * 80)
 
         # Add section for failed downloads
         if failed_sources:
@@ -609,29 +896,41 @@ class PlagiarismChecker:
         
         # Step 2: Extract key phrases
         phrases = self.extract_key_phrases(doc_text)
-        
-        # Step 3: Search for similar content online
-        urls = self.search_all_phrases(phrases)
-        
-        if not urls:
-            print("\n⚠ Warning: No sources found online. Cannot perform comparison.")
-            print("This might mean the document is original, or search failed.")
-            sys.exit(0)
-        
-        # Step 4: Download sources
-        sources, failed_sources = self.download_all_sources(urls)
 
-        if not sources:
-            print("\n⚠ Warning: Could not download any sources. Cannot perform comparison.")
-            if failed_sources:
-                print(f"All {len(failed_sources)} sources failed to download.")
+        # Step 3a: Load local sources if enabled
+        local_sources = []
+        if self.use_local:
+            local_sources = self.load_local_sources()
+
+        # Step 3b: Search for similar content online
+        urls = self.search_all_phrases(phrases)
+
+        if not urls and not local_sources:
+            print("\n⚠ Warning: No sources found (neither online nor local). Cannot perform comparison.")
             sys.exit(0)
+
+        # Step 4: Download online sources
+        online_sources = []
+        failed_sources = []
+        if urls:
+            online_sources, failed_sources = self.download_all_sources(urls)
+
+        if not online_sources and not local_sources:
+            print("\n⚠ Warning: Could not access any sources. Cannot perform comparison.")
+            if failed_sources:
+                print(f"All {len(failed_sources)} online sources failed to download.")
+            sys.exit(0)
+
+        # Combine local and online sources
+        all_sources = local_sources + online_sources
+
+        print(f"\n✓ Total sources to analyze: {len(all_sources)} ({len(local_sources)} local, {len(online_sources)} online)")
 
         # Step 5: Analyze similarity
-        results = self.analyze_sources(doc_text, sources)
+        results = self.analyze_sources(doc_text, all_sources)
 
         # Generate report
-        self.generate_report(results, doc_text, failed_sources)
+        self.generate_report(results, doc_text, failed_sources, len(local_sources))
 
 def main():
     import argparse
@@ -657,6 +956,10 @@ Examples:
                         help='Maximum number of sources to check (default: 30)')
     parser.add_argument('--num-phrases', type=int, default=None,
                         help='Number of key phrases to extract (default: auto-scale, 1 per page)')
+    parser.add_argument('--use-apis', action='store_true',
+                        help='Search academic APIs (CrossRef, arXiv, Semantic Scholar) in addition to web search')
+    parser.add_argument('--use-local', action='store_true',
+                        help='Compare with local reference files in "local_references" folder')
 
     args = parser.parse_args()
 
@@ -674,7 +977,9 @@ Examples:
         max_sources=args.max_sources,
         extract_pages=args.pages,
         page_position=args.position,
-        num_phrases=args.num_phrases
+        num_phrases=args.num_phrases,
+        use_apis=args.use_apis,
+        use_local=args.use_local
     )
     checker.check()
 
