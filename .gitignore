@@ -160,7 +160,10 @@ cython_debug/
 #.idea/
 
 # JSON
-.json
+*.json
 
-#YMAL
-.yaml
+# YAML
+*.yaml
+
+# JPG
+*.jpg
