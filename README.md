@@ -4,6 +4,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 ## Tools
 
+- **[amazon_product_info](https://github.com/RiccardoCuccu/py-tools/blob/main/amazon_product_info/)** - Tool to extract prices, names, and images from Amazon product URLs using PA-API, HTML parsing, and browser automation.
+
 - **[bitcoin_fibonacci_log_chart](https://github.com/RiccardoCuccu/py-tools/blob/main/bitcoin_fibonacci_log_chart/)** - Visualization tool that plots Bitcoin's historical price on a logarithmic scale with Fibonacci retracement levels and halving events.
 
 - **[google_podcasts_decoder](https://github.com/RiccardoCuccu/py-tools/blob/main/google_podcasts_decoder/)** - Script to decode Google Podcasts URLs and extract episode information from RSS feeds.

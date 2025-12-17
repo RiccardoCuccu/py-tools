@@ -260,11 +260,13 @@ class AmazonScraper:
         """Process URLs with batch API support"""
         results = []
         batch_size = config.API_BATCH_SIZE
+        total_batches = (len(urls) + batch_size - 1) // batch_size
         
         for i in range(0, len(urls), batch_size):
             batch = urls[i:i + batch_size]
+            batch_num = i//batch_size + 1
             logger.info(f"{'='*100}")
-            logger.info(f"[Main] Processing batch {i//batch_size + 1} ({len(batch)} URLs)")
+            logger.info(f"[Main] Processing batch {batch_num}/{total_batches} ({len(batch)} URLs)")
             logger.info(f"{'='*100}")
             
             batch_results = await self.process_batch_with_api(batch)
@@ -272,6 +274,7 @@ class AmazonScraper:
             for idx, url in enumerate(batch):
                 global_idx = i + idx + 1
                 logger.info(f"{'='*100}")
+                logger.info(f"[Main] Processing URL {global_idx}/{self.stats.total_urls}")
 
                 if url in batch_results and batch_results[url]:
                     data = batch_results[url]
