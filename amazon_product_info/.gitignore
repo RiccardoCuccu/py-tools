@@ -1,0 +1,11 @@
+# Amazon API Credentials
+config.json
+
+# Output files
+output.txt
+scraper.log
+
+# Downloaded images
+images/
+*.jpg
+*.png
