@@ -8,6 +8,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 - **[google_podcasts_decoder](https://github.com/RiccardoCuccu/py-tools/blob/main/google_podcasts_decoder/)** - Script to decode Google Podcasts URLs and extract episode information from RSS feeds.
 
+- **[image_framer](https://github.com/RiccardoCuccu/py-tools/blob/main/image_framer/)** - Script to add customizable colored frames and text overlays to images with configurable padding, layered frames, and full RGB color support.
+
 - **[merge_python_files](https://github.com/RiccardoCuccu/py-tools/blob/main/merge_python_files/)** - Script to consolidate multiple Python files from a directory into a single executable file.
 
 - **[pdf_highlight_extractor](https://github.com/RiccardoCuccu/py-tools/blob/main/pdf_highlight_extractor/)** - GUI script to extract highlighted text from PDF files and save them to text files.
