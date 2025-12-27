@@ -25,3 +25,5 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 - **[steam_cloud_downloader](https://github.com/RiccardoCuccu/py-tools/blob/main/steam_cloud_downloader/)** - Script to automate downloading game save files from Steam Cloud and organize them into folders.
 
 - **[webpage_carbon_dating](https://github.com/RiccardoCuccu/py-tools/blob/main/webpage_carbon_dating/)** - Script to retrieve the oldest recorded publication date of a webpage from its metadata.
+
+- **[youtube_auto_playlist](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_auto_playlist/)** - Script to automatically add every new video from all YouTube subscriptions to a selected playlist.
