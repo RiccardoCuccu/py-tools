@@ -22,6 +22,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 - **[rda_calculator](https://github.com/RiccardoCuccu/py-tools/blob/main/rda_calculator/)** - GUI script for converting milligrams of vitamins and minerals into RDA percentages for MyFitnessPal.
 
+- **[social_media_tracker](https://github.com/RiccardoCuccu/py-tools/blob/main/social_media_tracker/)** - Script to automatically track follower counts across Instagram and YouTube on a configurable schedule.
+
 - **[steam_cloud_downloader](https://github.com/RiccardoCuccu/py-tools/blob/main/steam_cloud_downloader/)** - Script to automate downloading game save files from Steam Cloud and organize them into folders.
 
 - **[webpage_carbon_dating](https://github.com/RiccardoCuccu/py-tools/blob/main/webpage_carbon_dating/)** - Script to retrieve the oldest recorded publication date of a webpage from its metadata.
