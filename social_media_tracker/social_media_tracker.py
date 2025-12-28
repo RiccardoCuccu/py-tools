@@ -18,14 +18,14 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 # Import platform scrapers
-import scraper_instagram, scraper_youtube
+import scraper_instagram, scraper_threads, scraper_youtube
 
 # =====================================
 # GENERAL CONFIGURATION - EDIT THESE VALUES
 # =====================================
 
 # Debug Settings
-DEBUG_MODE = True  # Set to False to disable detailed debug logs
+DEBUG_MODE = False  # Set to False to disable detailed debug logs
 
 # Configuration file name (not to be committed to git)
 CONFIG_FILE = "social_profiles.json"
@@ -53,6 +53,7 @@ def debug_log(message: str) -> None:
 # Registry of available scrapers - add new platforms here
 SCRAPERS = {
     "instagram": scraper_instagram.get_followers,
+    "threads": scraper_threads.get_followers,
     "youtube": scraper_youtube.get_followers,
 }
 
@@ -73,6 +74,10 @@ def create_default_config() -> None:
         },
         "profiles": {
             "instagram": {
+                "url": "",
+                "enabled": False
+            },
+            "threads": {
                 "url": "",
                 "enabled": False
             },
@@ -131,6 +136,14 @@ def collect_stats(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         try:
             scraper_func = SCRAPERS[platform]
             result = scraper_func(url, max_retries=max_retries, retry_delay=retry_delay, debug_mode=DEBUG_MODE)
+            
+            # Display result
+            if result.get("followers") is not None:
+                username_display = result.get("username", "Unknown")
+                followers = result.get("followers")
+                print(f"  ✓ {platform.title()}: {username_display} - {followers:,} followers")
+            else:
+                print(f"  ✗ {platform.title()}: Could not retrieve follower count")
             
             stats[platform] = {
                 "username": result.get("username", ""),
@@ -273,9 +286,21 @@ def job_runner() -> None:
     print(f"{'='*60}\n")
     
     stats = collect_stats(config)
+    
+    # Display summary
+    print(f"\n{'='*60}")
+    print("SUMMARY")
+    print(f"{'='*60}")
+    for platform, data in stats.items():
+        if data.get("followers") is not None:
+            print(f"{platform.title():12} : {data['username']:25} - {data['followers']:>8,} followers")
+        else:
+            print(f"{platform.title():12} : {data.get('username', 'N/A'):25} - {'ERROR':>8}")
+    print(f"{'='*60}\n")
+    
     append_to_excel_history(stats)
     
-    print(f"\n{'='*60}")
+    print(f"{'='*60}")
     print("Job completed successfully!")
     print(f"{'='*60}\n")
 
