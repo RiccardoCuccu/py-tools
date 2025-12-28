@@ -5,11 +5,11 @@
 ## How it Works
 
 - The script authenticates the user via OAuth 2.0 using the YouTube Data API.
-- It retrieves all channels from your subscriptions list.
+- It retrieves all channels from your subscriptions list (alphabetically sorted).
 - It checks for new videos published since the last check using RSS feeds (no API quota) or API search.
-- Any new video found is automatically added to your target playlist.
+- Any new video found is automatically added to your target playlist or simulated in dry-run mode.
 - The script logs all added videos with timestamps, titles, and links.
-- It updates a local state file to ensure the same video is never added twice.
+- It updates a local state file to ensure the same video is never added twice and tracks daily quota usage.
 
 ## Usage
 ```

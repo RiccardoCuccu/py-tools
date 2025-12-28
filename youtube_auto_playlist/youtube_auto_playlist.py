@@ -20,6 +20,7 @@ MAX_VIDEOS_PER_CHANNEL = 5                              # Max videos to check pe
 RETRY_DELAY_MINUTES = 60                                # Wait time after errors before retry (1 hour for quota errors)
 INCLUDE_SHORTS = False                                  # Set to True to include YouTube Shorts/Reels, False to exclude them
 USE_RSS_FEEDS = True                                    # Set to True to use RSS feeds (FREE, no quota usage), False to use API
+DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
 
 # File Paths
 CONFIG_FILE = "config.yaml"                             # User-specific settings (not in repository)
@@ -50,6 +51,9 @@ TOKEN_FILE = os.path.join(SCRIPT_DIR, TOKEN_FILE)
 STATE_FILE = os.path.join(SCRIPT_DIR, STATE_FILE)
 LOG_FILE = os.path.join(SCRIPT_DIR, LOG_FILE)
 SUBSCRIPTIONS_CACHE_FILE = os.path.join(SCRIPT_DIR, SUBSCRIPTIONS_CACHE_FILE)
+
+# Global quota tracking
+quota_used = 0
 
 # =====================================
 # CACHING UTILITIES
@@ -98,7 +102,7 @@ def save_subscriptions_cache(subscriptions, etag=None):
 # =====================================
 
 def log_added_video(video_id, video_title, channel_title):
-    """Log added video to file"""
+    """Log added video to file and print compact one-line format"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     log_entry = f"[{timestamp}] {channel_title} - {video_title} - {video_url}\n"
@@ -106,9 +110,7 @@ def log_added_video(video_id, video_title, channel_title):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_entry)
     
-    print(f"✓ Added: {video_title}")
-    print(f"  Channel: {channel_title}")
-    print(f"  URL: {video_url}")
+    print(f"  ✓ {video_title} - {video_url}")
 
 # =====================================
 # FIRST RUN SETUP
@@ -161,9 +163,9 @@ def first_run_setup():
     # Check for client_secret.json first
     if not check_client_secret():
         print(f"⚠ Missing {CLIENT_SECRET_FILE}!\n")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"┌────────────────────────────────────────────────────────┐")
         print(f"STEP-BY-STEP: Get OAuth 2.0 Credentials")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+        print(f"└────────────────────────────────────────────────────────┘\n")
         
         print(f"📋 STEP 1: Create/Select Google Cloud Project")
         print(f"   → Go to: https://console.cloud.google.com/")
@@ -215,7 +217,7 @@ def first_run_setup():
         print(f"   → Rename the file to: {os.path.basename(CLIENT_SECRET_FILE)}")
         print(f"   → Move it to: {os.path.dirname(CLIENT_SECRET_FILE)}\n")
         
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"┌────────────────────────────────────────────────────────┐")
         print(f"After completing these steps, run the script again.")
         print(f"\n⚠️ TROUBLESHOOTING:")
         print(f"If you see 'Error 403: access_denied' when the browser opens:")
@@ -224,7 +226,7 @@ def first_run_setup():
         print(f"  → Under 'Test users', click 'Add users'")
         print(f"  → Make sure YOUR EMAIL is added as a test user")
         print(f"  → Wait a few minutes and try again")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"└────────────────────────────────────────────────────────┘")
         return False
     
     print("✓ Client secret file found\n")
@@ -278,7 +280,7 @@ def first_run_setup():
                 print()
                 break
             elif response in ['no', 'n']:
-                print("\n⚠️  Please add yourself as a test user first, then run the script again.\n")
+                print("\n⚠️ Please add yourself as a test user first, then run the script again.\n")
                 return False
             else:
                 print("Please answer 'yes' or 'no'\n")
@@ -292,11 +294,12 @@ def first_run_setup():
     print(f"  • Videos per channel: {MAX_VIDEOS_PER_CHANNEL} latest")
     print(f"  • Include Shorts/Reels: {'Yes' if INCLUDE_SHORTS else 'No (filtered out)'}")
     print(f"  • Method: {'RSS Feeds (FREE - no quota)' if USE_RSS_FEEDS else 'API (uses quota)'}")
+    print(f"  • Dry run mode: {'ENABLED (no videos will be added)' if DRY_RUN else 'Disabled'}")
     print(f"  • Subscriptions cache: {CACHE_SUBSCRIPTIONS_HOURS} hours")
     print(f"  • Log file: {LOG_FILE}")
     
     if not USE_RSS_FEEDS:
-        print(f"\n⚠️  QUOTA WARNING:")
+        print(f"\n⚠️ QUOTA WARNING:")
         print(f"  YouTube API has a daily limit of 10,000 units.")
         print(f"  Each subscription check costs ~100 units (search operation).")
         if not INCLUDE_SHORTS:
@@ -327,9 +330,20 @@ def load_config():
 def load_state():
     """Load local state to avoid duplicate processing"""
     if not os.path.exists(STATE_FILE):
-        return {"last_check_time": None, "processed_videos": []}
+        return {
+            "last_check_time": None,
+            "processed_videos": [],
+            "quota_used_today": 0,
+            "quota_reset_date": datetime.now(timezone.utc).date().isoformat()
+        }
     with open(STATE_FILE, "r") as file:
-        return json.load(file)
+        state = json.load(file)
+        # Ensure quota fields exist for backward compatibility
+        if "quota_used_today" not in state:
+            state["quota_used_today"] = 0
+        if "quota_reset_date" not in state:
+            state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
+        return state
 
 def save_state(state):
     """Persist state locally"""
@@ -367,6 +381,27 @@ def authenticate():
     return build("youtube", "v3", credentials=credentials)
 
 # =====================================
+# QUOTA TRACKING UTILITIES
+# =====================================
+
+def add_quota_cost(cost):
+    """Track API quota usage"""
+    global quota_used
+    quota_used += cost
+
+def reset_quota_if_new_day(state):
+    """Reset quota counter if it's a new day (YouTube quota resets at midnight Pacific Time)"""
+    today = datetime.now(timezone.utc).date().isoformat()
+    last_reset = state.get("quota_reset_date", today)
+    
+    if today != last_reset:
+        print(f"New day detected - resetting quota counter (was {state.get('quota_used_today', 0)} units)")
+        state["quota_used_today"] = 0
+        state["quota_reset_date"] = today
+        return True
+    return False
+
+# =====================================
 # YOUTUBE API LOGIC
 # =====================================
 
@@ -389,6 +424,7 @@ def get_all_subscriptions(youtube_service):
                 )
                 request.headers = {"If-None-Match": cached_etag}
                 response = request.execute()
+                add_quota_cost(1)
                 
                 # If we get here, content has changed (304 would raise exception)
                 print("⚠ Subscriptions changed, fetching updates...")
@@ -417,6 +453,7 @@ def get_all_subscriptions(youtube_service):
             fields="etag,nextPageToken,items(snippet(resourceId/channelId,title))"
         )
         response = request.execute()
+        add_quota_cost(1)
         
         # Save ETag from first response
         if not etag:
@@ -509,6 +546,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
         fields="items(id/videoId,snippet(title,channelTitle))"
     )
     response = request.execute()
+    add_quota_cost(100)
     
     videos = []
     video_ids = []
@@ -532,6 +570,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
             fields="items(id,contentDetails/duration)"
         )
         details_response = details_request.execute()
+        add_quota_cost(1)
         
         # Parse durations and filter out shorts (< 60 seconds)
         duration_map = {}
@@ -570,7 +609,11 @@ def parse_duration(duration_str):
     return hours * 3600 + minutes * 60 + seconds
 
 def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
-    """Add a video to the target playlist"""
+    """Add a video to the target playlist (or simulate in dry run mode)"""
+    if DRY_RUN:
+        # Simulate success without making API call
+        return True
+    
     try:
         youtube_service.playlistItems().insert(
             part="snippet",
@@ -584,6 +627,7 @@ def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
                 }
             }
         ).execute()
+        add_quota_cost(50)
         return True
     except Exception as e:
         print(f"  ⚠ Failed to add video: {e}")
@@ -594,6 +638,8 @@ def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
 # =====================================
 
 def run():
+    global quota_used
+    
     config = load_config()
     target_playlist_id = config["youtube"]["target_playlist_id"]
     
@@ -601,6 +647,12 @@ def run():
     
     # Load state
     state = load_state()
+    
+    # Reset quota if new day
+    reset_quota_if_new_day(state)
+    
+    # Initialize quota_used from saved state
+    quota_used = state.get("quota_used_today", 0)
     
     # Calculate time threshold BEFORE starting the check
     check_start_time = datetime.now(timezone.utc)
@@ -616,6 +668,8 @@ def run():
     
     print(f"\n{'='*60}")
     print(f"Checking for new videos since: {time_threshold.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    if DRY_RUN:
+        print(f"DRY RUN MODE - No videos will be added to playlist")
     print(f"{'='*60}\n")
     
     # Save the check start time IMMEDIATELY to prevent missing videos if script crashes
@@ -627,6 +681,9 @@ def run():
     subscriptions = get_all_subscriptions(youtube_service)
     print(f"✓ Found {len(subscriptions)} subscriptions\n")
     
+    # Sort subscriptions alphabetically by channel title
+    subscriptions.sort(key=lambda x: x["channel_title"].lower())
+    
     # Track processed videos in this run
     processed_videos = set(state.get("processed_videos", []))
     videos_added_count = 0
@@ -636,8 +693,6 @@ def run():
         channel_id = sub["channel_id"]
         channel_title = sub["channel_title"]
         
-        print(f"Checking: {channel_title}...", end=" ")
-        
         try:
             # Use RSS or API based on configuration
             if USE_RSS_FEEDS:
@@ -646,10 +701,10 @@ def run():
                 videos = get_recent_videos_from_channel(youtube_service, channel_id, published_after)
             
             if not videos:
-                print("No new videos")
+                print(f"Checking: {channel_title} → No new videos")
                 continue
             
-            print(f"Found {len(videos)} new video(s)")
+            print(f"Checking: {channel_title} → Found {len(videos)} new video(s)")
             
             for video in videos:
                 video_id = video["video_id"]
@@ -665,15 +720,25 @@ def run():
                     videos_added_count += 1
         
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Checking: {channel_title} → Error: {e}")
     
     # Update state with processed videos (last_check_time already saved at start)
     state["processed_videos"] = list(processed_videos)[-1000:]  # Keep last 1000 to prevent file growth
+    state["quota_used_today"] = quota_used
     save_state(state)
+    
+    # Calculate remaining quota estimate and quota used in this run
+    daily_quota_limit = 10000
+    remaining_quota = daily_quota_limit - quota_used
+    quota_before_run = state.get("quota_used_today", 0) if "quota_used_today" in state else 0
+    quota_this_run = quota_used - quota_before_run
     
     print(f"\n{'='*60}")
     print(f"Check complete! Added {videos_added_count} new video(s) to playlist")
     print(f"Next check will look for videos after: {check_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"API quota used this run: {quota_this_run} units")
+    print(f"Total quota used today: {quota_used} units")
+    print(f"Estimated remaining daily quota: {remaining_quota} / {daily_quota_limit} units")
     print(f"{'='*60}\n")
 
 # =====================================
@@ -700,7 +765,7 @@ if __name__ == "__main__":
             
             # Check if it's a quota error
             if "quotaExceeded" in error_message or "quota" in error_message.lower():
-                print(f"\n⚠️  QUOTA EXCEEDED!")
+                print(f"\n⚠️ QUOTA EXCEEDED!")
                 print(f"   YouTube API daily limit of 10,000 units reached.")
                 print(f"   Quota resets at midnight Pacific Time (PT/PDT).")
                 print(f"   Script will retry in {RETRY_DELAY_MINUTES} minutes.")
