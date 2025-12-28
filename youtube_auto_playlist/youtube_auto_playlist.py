@@ -18,7 +18,9 @@ from google.oauth2.credentials import Credentials
 POLL_INTERVAL_MINUTES = 360                             # How often to check for new videos (6 hours to save quota)
 MAX_VIDEOS_PER_CHANNEL = 5                              # Max videos to check per channel each time
 RETRY_DELAY_MINUTES = 60                                # Wait time after errors before retry (1 hour for quota errors)
-INCLUDE_SHORTS = False                                  # Set to True to include YouTube Shorts/Reels, False to exclude them
+INCLUDE_SHORTS = False                                  # Set to True to include YouTube Shorts, False to exclude them
+                                                        # Note: Filtering shorts costs +1 API unit per channel (to check video durations)
+SHORTS_MAX_DURATION_SECONDS = 90                        # Maximum duration in seconds to consider a video as a Short (default: 90)
 USE_RSS_FEEDS = True                                    # Set to True to use RSS feeds (FREE, no quota usage), False to use API
 DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
 
@@ -314,6 +316,8 @@ def first_run_setup():
         print(f"\n✓ RSS mode enabled - No API quota will be used for checking videos!")
         print(f"  Only subscriptions fetch (~1-2 units/day) and playlist operations")
         print(f"  (~50 units per video added) will consume quota.")
+        if not INCLUDE_SHORTS:
+            print(f"  Note: Filtering Shorts costs 1 unit per channel with recent videos")
     
     print("\nSetup complete! Starting authentication...\n")
     return True
@@ -473,8 +477,8 @@ def get_all_subscriptions(youtube_service):
     
     return subscriptions
 
-def get_recent_videos_from_channel_rss(channel_id, published_after):
-    """Get videos from channel using RSS feed (FREE - no API quota)"""
+def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_after):
+    """Get videos published after a certain time from a channel using RSS feed"""
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
@@ -492,6 +496,7 @@ def get_recent_videos_from_channel_rss(channel_id, published_after):
         }
         
         videos = []
+        video_ids = []
         
         for entry in root.findall('atom:entry', ns):
             # Get video ID
@@ -521,12 +526,43 @@ def get_recent_videos_from_channel_rss(channel_id, published_after):
             
             # Filter by publish date
             if published_dt >= published_after:
+                video_ids.append(video_id)
                 videos.append({
                     "video_id": video_id,
                     "title": title,
                     "channel_title": channel_title,
                     "published": published_dt
                 })
+        
+        # If we need to filter shorts and have videos, check durations
+        if not INCLUDE_SHORTS and video_ids:
+            filtered_videos = []
+            
+            # QUOTA COST: 1 unit for videos.list operation
+            # This is necessary because RSS feeds don't include duration information
+            details_request = youtube_service.videos().list(
+                part="contentDetails",
+                id=",".join(video_ids),
+                fields="items(id,contentDetails/duration)"
+            )
+            details_response = details_request.execute()
+            add_quota_cost(1)
+            
+            # Parse durations and filter out shorts (< 60 seconds)
+            duration_map = {}
+            for item in details_response.get("items", []):
+                video_id = item["id"]
+                duration_str = item["contentDetails"]["duration"]
+                duration_seconds = parse_duration(duration_str)
+                duration_map[video_id] = duration_seconds
+            
+            # Keep only videos longer than SHORTS_MAX_DURATION_SECONDS
+            for video in videos:
+                video_id = video["video_id"]
+                if video_id in duration_map and duration_map[video_id] > SHORTS_MAX_DURATION_SECONDS:
+                    filtered_videos.append(video)
+            
+            return filtered_videos
         
         return videos
         
@@ -535,7 +571,7 @@ def get_recent_videos_from_channel_rss(channel_id, published_after):
         return []
 
 def get_recent_videos_from_channel(youtube_service, channel_id, published_after):
-    """Get videos published after a certain time from a channel (API method with optimized fields)"""
+    """Get videos published after a certain time from a channel using API"""
     request = youtube_service.search().list(
         part="snippet",
         channelId=channel_id,
@@ -584,7 +620,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
         # Filter videos based on duration
         for video in videos:
             video_id = video["video_id"]
-            if video_id in duration_map and duration_map[video_id] >= 60:
+            if video_id in duration_map and duration_map[video_id] > SHORTS_MAX_DURATION_SECONDS:
                 filtered_videos.append(video)
         
         return filtered_videos
@@ -696,7 +732,7 @@ def run():
         try:
             # Use RSS or API based on configuration
             if USE_RSS_FEEDS:
-                videos = get_recent_videos_from_channel_rss(channel_id, time_threshold)
+                videos = get_recent_videos_from_channel_rss(youtube_service, channel_id, time_threshold)
             else:
                 videos = get_recent_videos_from_channel(youtube_service, channel_id, published_after)
             
