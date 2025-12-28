@@ -26,6 +26,11 @@ USE_RSS_FEEDS = True                                    # Set to True to use RSS
 DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
 USE_BATCH_OPERATIONS = True                             # Set to True to use batch operations for adding videos (more efficient)
 
+# Keyword Filtering (case-insensitive)
+ENABLE_KEYWORD_FILTER = False                           # Set to True to enable keyword filtering
+FILTER_MODE = "include"                                 # "include" = only videos with these keywords, "exclude" = skip videos with these keywords
+FILTER_KEYWORDS = []                                    # List of keywords to include/exclude (e.g., ["tutorial", "review"]).
+
 # File Paths
 CONFIG_FILE = "config.yaml"                             # User-specific settings (not in repository)
 CLIENT_SECRET_FILE = "client_secret.json"               # OAuth credentials file (not in repository)
@@ -301,6 +306,10 @@ def first_run_setup():
     print(f"  • Batch operations: {'ENABLED (more efficient)' if USE_BATCH_OPERATIONS else 'Disabled'}")
     print(f"  • Dry run mode: {'ENABLED (no videos will be added)' if DRY_RUN else 'Disabled'}")
     print(f"  • Subscriptions cache: {CACHE_SUBSCRIPTIONS_HOURS} hours")
+    print(f"  • Keyword filter: {'ENABLED' if ENABLE_KEYWORD_FILTER else 'Disabled'}")
+    if ENABLE_KEYWORD_FILTER and FILTER_KEYWORDS:
+        print(f"    - Mode: {FILTER_MODE.upper()}")
+        print(f"    - Keywords: {', '.join(FILTER_KEYWORDS)}")
     print(f"  • Log file: {LOG_FILE}")
     
     if not USE_RSS_FEEDS:
@@ -413,6 +422,27 @@ def reset_quota_if_new_day(state):
     return False
 
 # =====================================
+# KEYWORD FILTERING UTILITIES
+# =====================================
+
+def matches_keyword_filter(title):
+    """Check if video title matches keyword filter rules"""
+    if not ENABLE_KEYWORD_FILTER or not FILTER_KEYWORDS:
+        return True
+    
+    title_lower = title.lower()
+    
+    if FILTER_MODE == "include":
+        # Include mode: video must contain at least one keyword
+        return any(keyword.lower() in title_lower for keyword in FILTER_KEYWORDS)
+    elif FILTER_MODE == "exclude":
+        # Exclude mode: video must NOT contain any keyword
+        return not any(keyword.lower() in title_lower for keyword in FILTER_KEYWORDS)
+    else:
+        # Invalid mode, default to accepting all
+        return True
+
+# =====================================
 # YOUTUBE API LOGIC
 # =====================================
 
@@ -422,7 +452,8 @@ def get_all_subscriptions(youtube_service):
     # Try to load from cache first
     cache = load_subscriptions_cache()
     if cache:
-        # Use the cache if it's valid
+        # Simple approach: just use the cache if it's valid
+        # ETag validation is complex with Google API client library
         return cache["subscriptions"]
     
     # Fetch fresh subscriptions with optimized fields
@@ -517,6 +548,11 @@ def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_af
                     "published": published_dt
                 })
         
+        # Apply keyword filter before checking durations
+        if ENABLE_KEYWORD_FILTER and FILTER_KEYWORDS:
+            videos = [v for v in videos if matches_keyword_filter(v["title"])]
+            video_ids = [v["video_id"] for v in videos]
+        
         # If we need to filter shorts and have videos, check durations
         if not INCLUDE_SHORTS and video_ids:
             filtered_videos = []
@@ -565,7 +601,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
         fields="items(id/videoId,snippet(title,channelTitle))"
     )
     response = request.execute()
-    add_quota_cost(100)  # Correct: search.list = 100 units
+    add_quota_cost(100)
     
     videos = []
     video_ids = []
@@ -577,6 +613,11 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
             "title": item["snippet"]["title"],
             "channel_title": item["snippet"]["channelTitle"]
         })
+    
+    # Apply keyword filter before checking durations
+    if ENABLE_KEYWORD_FILTER and FILTER_KEYWORDS:
+        videos = [v for v in videos if matches_keyword_filter(v["title"])]
+        video_ids = [v["video_id"] for v in videos]
     
     # If we need to filter shorts, get video details to check duration
     if not INCLUDE_SHORTS and video_ids:
@@ -794,6 +835,12 @@ def run():
                 # Skip if already processed
                 if video_id in processed_videos:
                     continue
+                
+                # Apply keyword filter
+                if ENABLE_KEYWORD_FILTER and FILTER_KEYWORDS:
+                    if not matches_keyword_filter(video["title"]):
+                        print(f"  ⊘ Skipped (keyword filter): {video['title']}")
+                        continue
                 
                 if USE_BATCH_OPERATIONS:
                     # Add to batch queue
