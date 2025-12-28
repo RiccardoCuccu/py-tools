@@ -7,6 +7,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.http import BatchHttpRequest
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
@@ -23,6 +24,7 @@ INCLUDE_SHORTS = False                                  # Set to True to include
 SHORTS_MAX_DURATION_SECONDS = 90                        # Maximum duration in seconds to consider a video as a Short (default: 90)
 USE_RSS_FEEDS = True                                    # Set to True to use RSS feeds (FREE, no quota usage), False to use API
 DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
+USE_BATCH_OPERATIONS = True                             # Set to True to use batch operations for adding videos (more efficient)
 
 # File Paths
 CONFIG_FILE = "config.yaml"                             # User-specific settings (not in repository)
@@ -294,8 +296,9 @@ def first_run_setup():
     print(f"  • Target Playlist: {config['youtube']['target_playlist_id']}")
     print(f"  • Check interval: {POLL_INTERVAL_MINUTES} minutes ({POLL_INTERVAL_MINUTES // 60} hours)")
     print(f"  • Videos per channel: {MAX_VIDEOS_PER_CHANNEL} latest")
-    print(f"  • Include Shorts/Reels: {'Yes' if INCLUDE_SHORTS else 'No (filtered out)'}")
+    print(f"  • Include Shorts: {'Yes' if INCLUDE_SHORTS else 'No (filtered out)'}")
     print(f"  • Method: {'RSS Feeds (FREE - no quota)' if USE_RSS_FEEDS else 'API (uses quota)'}")
+    print(f"  • Batch operations: {'ENABLED (more efficient)' if USE_BATCH_OPERATIONS else 'Disabled'}")
     print(f"  • Dry run mode: {'ENABLED (no videos will be added)' if DRY_RUN else 'Disabled'}")
     print(f"  • Subscriptions cache: {CACHE_SUBSCRIPTIONS_HOURS} hours")
     print(f"  • Log file: {LOG_FILE}")
@@ -311,11 +314,15 @@ def first_run_setup():
         print(f"    • Subscriptions caching (saves ~1-2 units per run)")
         print(f"    • ETag conditional requests (304 Not Modified)")
         print(f"    • Optimized fields parameter (reduces bandwidth)")
+        if USE_BATCH_OPERATIONS:
+            print(f"    • Batch playlist operations (more efficient)")
         print(f"\n  💡 TIP: Set USE_RSS_FEEDS = True to eliminate quota usage!")
     else:
         print(f"\n✓ RSS mode enabled - No API quota will be used for checking videos!")
         print(f"  Only subscriptions fetch (~1-2 units/day) and playlist operations")
         print(f"  (~50 units per video added) will consume quota.")
+        if USE_BATCH_OPERATIONS:
+            print(f"  Batch operations enabled: multiple videos added in single API call")
         if not INCLUDE_SHORTS:
             print(f"  Note: Filtering Shorts costs 1 unit per channel with recent videos")
     
@@ -415,32 +422,8 @@ def get_all_subscriptions(youtube_service):
     # Try to load from cache first
     cache = load_subscriptions_cache()
     if cache:
-        cached_etag = cache.get("etag")
-        
-        # Try conditional request with ETag
-        if cached_etag:
-            try:
-                request = youtube_service.subscriptions().list(
-                    part="snippet",
-                    mine=True,
-                    maxResults=1,
-                    fields="etag"
-                )
-                request.headers = {"If-None-Match": cached_etag}
-                response = request.execute()
-                add_quota_cost(1)
-                
-                # If we get here, content has changed (304 would raise exception)
-                print("⚠ Subscriptions changed, fetching updates...")
-                
-            except Exception as e:
-                # 304 Not Modified - use cache
-                if "304" in str(e) or "Not Modified" in str(e):
-                    print("✓ Subscriptions unchanged (ETag match)")
-                    return cache["subscriptions"]
-        else:
-            # No ETag, just use cache if valid
-            return cache["subscriptions"]
+        # Use the cache if it's valid
+        return cache["subscriptions"]
     
     # Fetch fresh subscriptions with optimized fields
     print("Fetching subscriptions from API...")
@@ -548,7 +531,7 @@ def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_af
             details_response = details_request.execute()
             add_quota_cost(1)
             
-            # Parse durations and filter out shorts (< 60 seconds)
+            # Parse durations and filter out shorts
             duration_map = {}
             for item in details_response.get("items", []):
                 video_id = item["id"]
@@ -582,7 +565,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
         fields="items(id/videoId,snippet(title,channelTitle))"
     )
     response = request.execute()
-    add_quota_cost(100)
+    add_quota_cost(100)  # Correct: search.list = 100 units
     
     videos = []
     video_ids = []
@@ -608,7 +591,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
         details_response = details_request.execute()
         add_quota_cost(1)
         
-        # Parse durations and filter out shorts (< 60 seconds)
+        # Parse durations and filter out shorts
         duration_map = {}
         for item in details_response.get("items", []):
             video_id = item["id"]
@@ -669,6 +652,66 @@ def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
         print(f"  ⚠ Failed to add video: {e}")
         return False
 
+def add_videos_to_playlist_batch(youtube_service, target_playlist_id, videos_to_add):
+    """Add multiple videos to playlist using batch operation"""
+    if DRY_RUN:
+        # Simulate success without making API call
+        for video in videos_to_add:
+            log_added_video(video["video_id"], video["title"], video["channel_title"])
+        return len(videos_to_add)
+    
+    if not videos_to_add:
+        return 0
+    
+    # Track successful additions for logging
+    successful_additions = []
+    failed_count = 0
+    
+    # Callback to handle batch response
+    def callback(request_id, response, exception):
+        nonlocal failed_count
+        video = videos_to_add[int(request_id)]
+        
+        if exception is not None:
+            print(f"  ⚠ Failed to add {video['title']}: {exception}")
+            failed_count += 1
+        else:
+            successful_additions.append(video)
+    
+    # Create batch request
+    batch = BatchHttpRequest(callback=callback)
+    
+    # Add all videos to batch
+    for i, video in enumerate(videos_to_add):
+        request = youtube_service.playlistItems().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "playlistId": target_playlist_id,
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": video["video_id"]
+                    }
+                }
+            }
+        )
+        batch.add(request, request_id=str(i))
+    
+    # Execute batch
+    try:
+        batch.execute()
+        add_quota_cost(len(videos_to_add) * 50)
+        
+        # Log successful additions
+        for video in successful_additions:
+            log_added_video(video["video_id"], video["title"], video["channel_title"])
+        
+        return len(successful_additions)
+    
+    except Exception as e:
+        print(f"  ⚠ Batch operation failed: {e}")
+        return 0
+
 # =====================================
 # MAIN EXECUTION LOGIC
 # =====================================
@@ -724,6 +767,9 @@ def run():
     processed_videos = set(state.get("processed_videos", []))
     videos_added_count = 0
     
+    # Collect all videos to add (for batch operation)
+    videos_to_add_batch = []
+    
     # Check each subscription for new videos
     for sub in subscriptions:
         channel_id = sub["channel_id"]
@@ -749,14 +795,25 @@ def run():
                 if video_id in processed_videos:
                     continue
                 
-                # Add to playlist
-                if add_video_to_playlist(youtube_service, target_playlist_id, video_id):
-                    log_added_video(video_id, video["title"], video["channel_title"])
+                if USE_BATCH_OPERATIONS:
+                    # Add to batch queue
+                    videos_to_add_batch.append(video)
                     processed_videos.add(video_id)
-                    videos_added_count += 1
+                else:
+                    # Add immediately
+                    if add_video_to_playlist(youtube_service, target_playlist_id, video_id):
+                        log_added_video(video_id, video["title"], video["channel_title"])
+                        processed_videos.add(video_id)
+                        videos_added_count += 1
         
         except Exception as e:
             print(f"Checking: {channel_title} → Error: {e}")
+    
+    # Process batch if enabled and there are videos to add
+    if USE_BATCH_OPERATIONS and videos_to_add_batch:
+        print(f"\nAdding {len(videos_to_add_batch)} video(s) to playlist using batch operation...")
+        added = add_videos_to_playlist_batch(youtube_service, target_playlist_id, videos_to_add_batch)
+        videos_added_count = added
     
     # Update state with processed videos (last_check_time already saved at start)
     state["processed_videos"] = list(processed_videos)[-1000:]  # Keep last 1000 to prevent file growth
