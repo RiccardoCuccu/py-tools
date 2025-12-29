@@ -452,8 +452,7 @@ def get_all_subscriptions(youtube_service):
     # Try to load from cache first
     cache = load_subscriptions_cache()
     if cache:
-        # Simple approach: just use the cache if it's valid
-        # ETag validation is complex with Google API client library
+        # Use the cache if it's valid
         return cache["subscriptions"]
     
     # Fetch fresh subscriptions with optimized fields
@@ -792,10 +791,6 @@ def run():
         print(f"DRY RUN MODE - No videos will be added to playlist")
     print(f"{'='*60}\n")
     
-    # Save the check start time IMMEDIATELY to prevent missing videos if script crashes
-    state["last_check_time"] = check_start_time.isoformat()
-    save_state(state)
-    
     # Get all subscriptions
     print("Fetching your subscriptions...")
     subscriptions = get_all_subscriptions(youtube_service)
@@ -810,6 +805,9 @@ def run():
     
     # Collect all videos to add (for batch operation)
     videos_to_add_batch = []
+    
+    # Track if any errors occurred during processing
+    processing_error = False
     
     # Check each subscription for new videos
     for sub in subscriptions:
@@ -845,24 +843,47 @@ def run():
                 if USE_BATCH_OPERATIONS:
                     # Add to batch queue
                     videos_to_add_batch.append(video)
-                    processed_videos.add(video_id)
                 else:
                     # Add immediately
                     if add_video_to_playlist(youtube_service, target_playlist_id, video_id):
                         log_added_video(video_id, video["title"], video["channel_title"])
                         processed_videos.add(video_id)
                         videos_added_count += 1
+                    else:
+                        processing_error = True
         
         except Exception as e:
             print(f"Checking: {channel_title} → Error: {e}")
+            processing_error = True
     
     # Process batch if enabled and there are videos to add
     if USE_BATCH_OPERATIONS and videos_to_add_batch:
         print(f"\nAdding {len(videos_to_add_batch)} video(s) to playlist using batch operation...")
-        added = add_videos_to_playlist_batch(youtube_service, target_playlist_id, videos_to_add_batch)
-        videos_added_count = added
+        try:
+            added = add_videos_to_playlist_batch(youtube_service, target_playlist_id, videos_to_add_batch)
+            videos_added_count = added
+            
+            # Only mark videos as processed if they were successfully added
+            if added > 0:
+                for video in videos_to_add_batch[:added]:
+                    processed_videos.add(video["video_id"])
+            
+            # If not all videos were added, mark as error
+            if added < len(videos_to_add_batch):
+                processing_error = True
+                print(f"⚠ Warning: Only {added} out of {len(videos_to_add_batch)} videos were added successfully")
+        except Exception as e:
+            print(f"⚠ Batch operation error: {e}")
+            processing_error = True
     
-    # Update state with processed videos (last_check_time already saved at start)
+    # Only update timestamp if no errors occurred
+    if not processing_error:
+        state["last_check_time"] = check_start_time.isoformat()
+    else:
+        print(f"\n⚠ Errors occurred during processing - timestamp NOT updated")
+        print(f"  Videos will be rechecked in the next cycle")
+    
+    # Always update processed videos list and quota
     state["processed_videos"] = list(processed_videos)[-1000:]  # Keep last 1000 to prevent file growth
     state["quota_used_today"] = quota_used
     save_state(state)
@@ -875,7 +896,10 @@ def run():
     
     print(f"\n{'='*60}")
     print(f"Check complete! Added {videos_added_count} new video(s) to playlist")
-    print(f"Next check will look for videos after: {check_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    if not processing_error:
+        print(f"Next check will look for videos after: {check_start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    else:
+        print(f"Next check will retry videos from: {time_threshold.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"API quota used this run: {quota_this_run} units")
     print(f"Total quota used today: {quota_used} units")
     print(f"Estimated remaining daily quota: {remaining_quota} / {daily_quota_limit} units")
