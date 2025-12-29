@@ -706,6 +706,9 @@ def run():
     # Initialize quota_used from saved state
     quota_used = state.get("quota_used_today", 0)
     
+    # Save quota value before API calls
+    quota_before_run = quota_used
+
     # Calculate time threshold BEFORE starting the check
     check_start_time = datetime.now(timezone.utc)
     
@@ -797,7 +800,6 @@ def run():
     # Calculate remaining quota estimate and quota used in this run
     daily_quota_limit = 10000
     remaining_quota = daily_quota_limit - quota_used
-    quota_before_run = state.get("quota_used_today", 0) if "quota_used_today" in state else 0
     quota_this_run = quota_used - quota_before_run
     
     print(f"\n{'='*60}")
