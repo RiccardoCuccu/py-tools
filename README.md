@@ -29,3 +29,5 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 - **[webpage_carbon_dating](https://github.com/RiccardoCuccu/py-tools/blob/main/webpage_carbon_dating/)** - Script to retrieve the oldest recorded publication date of a webpage from its metadata.
 
 - **[youtube_auto_playlist](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_auto_playlist/)** - Script to automatically add every new video from all YouTube subscriptions to a selected playlist.
+
+- **[youtube_video_backup](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_video_backup/)** - Script to automatically backup YouTube channel videos to a secondary private channel with full metadata preservation.
