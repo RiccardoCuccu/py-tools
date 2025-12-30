@@ -24,5 +24,5 @@ On the first run, the script will guide you through initial setup, asking for so
 To use `youtube_video_backup.py`, you'll need to install the following Python libraries:
 
 ```
-pip install yt-dlp google-api-python-client google-auth-oauthlib google-auth feedparser requests
+pip install yt-dlp google-api-python-client google-auth-oauthlib google-auth feedparser requests Pillow
 ```

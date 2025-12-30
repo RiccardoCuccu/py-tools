@@ -42,7 +42,9 @@ class StorageManager:
         return {
             "full_backup_completed": False,
             "last_backup_date": None,
-            "total_videos_backed_up": 0
+            "total_videos_backed_up": 0,
+            "quota_used_today": 0,
+            "quota_reset_date": datetime.now().isoformat()
         }
     
     def save_state(self, state):

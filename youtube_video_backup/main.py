@@ -47,7 +47,7 @@ def main():
     # Initialize components
     storage = StorageManager(config)
     logger = Logger(config)
-    youtube = YouTubeClient(config)
+    youtube = YouTubeClient(config, storage)  # Pass storage to YouTubeClient
     downloader = VideoDownloader(config)
     uploader = VideoUploader(config, youtube)  # Pass youtube_client for quota tracking
     
@@ -123,7 +123,7 @@ def main():
         
         if use_full_backup:
             print(f"\n{'='*60}")
-            print(f"🔹 FULL BACKUP MODE - First time complete backup")
+            print(f"📹 FULL BACKUP MODE - First time complete backup")
             print(f"{'='*60}")
             print(f"This will retrieve ALL videos from the source channel via API")
             print(f"Using API key (no OAuth needed for public source channel)")
@@ -140,7 +140,7 @@ def main():
             source_videos = youtube.get_all_channel_videos_api(config.source_channel_id)
         else:
             print(f"\n{'='*60}")
-            print(f"🔹 INCREMENTAL MODE - Checking recent videos via RSS")
+            print(f"📹 INCREMENTAL MODE - Checking recent videos via RSS")
             print(f"{'='*60}")
             print(f"Checking for new videos (last ~15 from RSS feed)")
             print(f"No API quota will be used for video discovery\n")
@@ -149,7 +149,7 @@ def main():
             source_videos = youtube.get_channel_videos_rss(config.source_channel_id)
     
     print(f"\n{'='*60}")
-    print(f"🔹 Found {len(source_videos)} total videos")
+    print(f"📹 Found {len(source_videos)} total videos")
     print(f"{'='*60}\n")
     
     # Filter videos to backup
@@ -178,7 +178,7 @@ def main():
         return
     
     print(f"\n{'='*60}")
-    print(f"🔹 Found {len(videos_to_backup)} videos to backup")
+    print(f"📹 Found {len(videos_to_backup)} videos to backup")
     print(f"{'='*60}\n")
     
     # Add videos to persistent queue (if not already from queue)
@@ -202,18 +202,19 @@ def main():
     
     for idx, video in enumerate(videos_to_backup, 1):
         print(f"\n{'─'*60}")
-        print(f"🔹 Video {idx}/{len(videos_to_backup)}: {video['title']}")
+        print(f"📹 Video {idx}/{len(videos_to_backup)}: {video['title']}")
         print(f"{'─'*60}")
         
         # Show current quota status before asking
         current_used = youtube.get_quota_today()
         remaining = QUOTA_DAILY_LIMIT - current_used
+        remaining_after = remaining - ESTIMATED_COST_PER_VIDEO
         
         print(f"\n💰 Quota status:")
         print(f"   • Currently used today: {current_used:,} / {QUOTA_DAILY_LIMIT:,} units")
         print(f"   • Remaining: {remaining:,} units")
         print(f"   • This video will cost: ~{ESTIMATED_COST_PER_VIDEO} units (upload + thumbnail)")
-        print(f"   • After upload: ~{current_used + ESTIMATED_COST_PER_VIDEO:,} / {QUOTA_DAILY_LIMIT:,} units")
+        print(f"   • After upload: ~{remaining_after:,} units remaining")
         
         if remaining < ESTIMATED_COST_PER_VIDEO:
             print(f"\n   ⚠️  WARNING: Not enough quota for this video!")

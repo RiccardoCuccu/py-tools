@@ -6,7 +6,6 @@ Handles video download (yt-dlp + API fallback) and upload to YouTube
 
 import os
 import json
-from typing import Dict, Any, Optional
 import yt_dlp
 from googleapiclient.http import MediaFileUpload
 
@@ -20,8 +19,63 @@ MIN_NATIVE_HEIGHT = 1080  # Minimum resolution for "native quality"
 class VideoDownloader:
     """Manages video downloads with yt-dlp and API fallback"""
     
+    # File extensions to search for
+    VIDEO_EXTENSIONS = ['mp4', 'webm', 'mkv', 'mov']
+    THUMBNAIL_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
+    
     def __init__(self, config):
         self.config = config
+    
+    @staticmethod
+    def _find_file_with_extensions(base_path, extensions):
+        """Find first existing file matching base_path with given extensions"""
+        for ext in extensions:
+            path = f"{base_path}.{ext}"
+            if os.path.exists(path):
+                return path
+        return None
+    
+    @staticmethod
+    def _get_video_resolution(video_path):
+        """Get video resolution using ffprobe"""
+        if not video_path or not os.path.exists(video_path):
+            return None
+        
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=width,height', '-of', 'csv=p=0',
+                 video_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                parts = result.stdout.strip().split(',')
+                if len(parts) == 2:
+                    width, height = parts[0].strip(), parts[1].strip()
+                    if width and height:
+                        return f"{width}x{height}"
+        except:
+            pass
+        
+        return None
+    
+    @staticmethod
+    def _get_image_resolution(image_path):
+        """Get image resolution using PIL"""
+        if not image_path or not os.path.exists(image_path):
+            return None
+        
+        try:
+            from PIL import Image
+            with Image.open(image_path) as img:
+                return f"{img.width}x{img.height}"
+        except:
+            pass
+        
+        return None
     
     def download(self, video_url, output_dir):
         """Download video with yt-dlp and API fallback"""
@@ -33,10 +87,22 @@ class VideoDownloader:
         # Check if video already exists locally
         existing_files = self._check_existing_download(video_id, output_dir)
         if existing_files:
-            print(f"\n   📁 Found existing download:")
-            print(f"      Video: {os.path.basename(existing_files['video_file'])}")
+            print(f"\n   📂 Found existing download:")
+            
+            # Show video with resolution
+            video_resolution = self._get_video_resolution(existing_files['video_file'])
+            video_info = f"{os.path.basename(existing_files['video_file'])}"
+            if video_resolution:
+                video_info += f" [{video_resolution}]"
+            print(f"      Video: {video_info}")
+            
+            # Show thumbnail with resolution
             if existing_files.get('thumbnail_file'):
-                print(f"      Thumbnail: {os.path.basename(existing_files['thumbnail_file'])}")
+                thumb_resolution = self._get_image_resolution(existing_files['thumbnail_file'])
+                thumb_info = f"{os.path.basename(existing_files['thumbnail_file'])}"
+                if thumb_resolution:
+                    thumb_info += f" [{thumb_resolution}]"
+                print(f"      Thumbnail: {thumb_info}")
             
             if not self.config.auto_confirm:
                 response = input("\n   Use existing download? (y/n): ").lower()
@@ -50,7 +116,7 @@ class VideoDownloader:
                 return existing_files
         
         # Try yt-dlp first
-        result: Optional[Dict[str, Any]] = self._download_ytdlp(video_url, output_dir)
+        result = self._download_ytdlp(video_url, output_dir)
         
         # If yt-dlp failed and API fallback is enabled, try API
         if not result and self.config.use_api_fallback:
@@ -73,24 +139,16 @@ class VideoDownloader:
     
     def _check_existing_download(self, video_id, output_dir):
         """Check if video was already downloaded"""
+        base_path = f"{output_dir}/{video_id}"
+        
         # Check for video file
-        video_file = None
-        for ext in ['mp4', 'webm', 'mkv', 'mov']:
-            potential_file = f"{output_dir}/{video_id}.{ext}"
-            if os.path.exists(potential_file):
-                video_file = potential_file
-                break
+        video_file = self._find_file_with_extensions(base_path, self.VIDEO_EXTENSIONS)
         
         if not video_file:
             return None
         
         # Find thumbnail file
-        thumbnail_file = None
-        for ext in ['jpg', 'jpeg', 'png', 'webp']:
-            potential_thumb = f"{output_dir}/{video_id}.{ext}"
-            if os.path.exists(potential_thumb):
-                thumbnail_file = potential_thumb
-                break
+        thumbnail_file = self._find_file_with_extensions(base_path, self.THUMBNAIL_EXTENSIONS)
         
         # Find info file
         info_file = f"{output_dir}/{video_id}.info.json"
@@ -167,25 +225,16 @@ class VideoDownloader:
                     return None
                     
                 video_id = info['id']  # type: ignore
+                base_path = f"{output_dir}/{video_id}"
                 
                 # Find downloaded video file
-                video_file = None
-                for ext in ['mp4', 'webm', 'mkv', 'mov']:
-                    potential_file = f"{output_dir}/{video_id}.{ext}"
-                    if os.path.exists(potential_file):
-                        video_file = potential_file
-                        break
+                video_file = self._find_file_with_extensions(base_path, self.VIDEO_EXTENSIONS)
                 
                 if not video_file:
                     return None
                 
                 # Find thumbnail file
-                thumbnail_file = None
-                for ext in ['jpg', 'jpeg', 'png', 'webp']:
-                    potential_thumb = f"{output_dir}/{video_id}.{ext}"
-                    if os.path.exists(potential_thumb):
-                        thumbnail_file = potential_thumb
-                        break
+                thumbnail_file = self._find_file_with_extensions(base_path, self.THUMBNAIL_EXTENSIONS)
                 
                 info_file = f"{output_dir}/{video_id}.info.json"
                 
@@ -209,9 +258,11 @@ class VideoDownloader:
         try:
             import requests
             from youtube_client import YouTubeClient
+            from utils import StorageManager
             
             # Get YouTube service
-            youtube = YouTubeClient(self.config)
+            storage = StorageManager(self.config)
+            youtube = YouTubeClient(self.config, storage)
             youtube.authenticate()
             
             # Get video details from API
@@ -406,9 +457,10 @@ class VideoUploader:
             media_body=media
         )
         
-        # Track quota cost
+        # Track quota cost and save to disk immediately before upload
         if self.youtube_client:
             self.youtube_client.add_quota_cost(QUOTA_VIDEO_UPLOAD)
+            self.youtube_client.save_quota_state()
         
         response = None
         print("   Uploading...", end='', flush=True)
@@ -425,14 +477,16 @@ class VideoUploader:
         if thumbnail_file and os.path.exists(thumbnail_file):
             try:
                 print("   Uploading thumbnail...", end='', flush=True)
+                
+                # Track quota cost and save to disk immediately before thumbnail upload
+                if self.youtube_client:
+                    self.youtube_client.add_quota_cost(QUOTA_THUMBNAIL_UPLOAD)
+                    self.youtube_client.save_quota_state()
+                
                 youtube_service.thumbnails().set(  # type: ignore
                     videoId=response['id'],
                     media_body=MediaFileUpload(thumbnail_file)  # type: ignore[arg-type]
                 ).execute()
-                
-                # Track quota cost
-                if self.youtube_client:
-                    self.youtube_client.add_quota_cost(QUOTA_THUMBNAIL_UPLOAD)
                 
                 print("\r✓ Thumbnail uploaded successfully!")
             except Exception as e:

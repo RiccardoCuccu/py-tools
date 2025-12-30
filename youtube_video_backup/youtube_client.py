@@ -6,7 +6,6 @@ Handles all YouTube API interactions, OAuth authentication, and RSS feed parsing
 
 import os
 import sys
-import json
 from typing import Optional
 from datetime import datetime, timezone
 import feedparser
@@ -14,7 +13,7 @@ from googleapiclient.discovery import build, Resource
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from config import SCOPES, CLIENT_SECRET_FILE, TOKEN_FILE, API_KEY_FILE, STATE_FILE
+from config import SCOPES, CLIENT_SECRET_FILE, TOKEN_FILE, API_KEY_FILE
 
 # YouTube API Quota Costs (as per YouTube Data API v3 documentation)
 QUOTA_DAILY_LIMIT = 10000
@@ -25,60 +24,40 @@ QUOTA_PLAYLIST_ITEMS_LIST = 1
 class YouTubeClient:
     """Manages YouTube API interactions and authentication"""
     
-    def __init__(self, config):
+    def __init__(self, config, storage_manager):
         self.config = config
+        self.storage = storage_manager
         self.service: Optional[Resource] = None
         
-        # Load quota state
-        self.state = self._load_state()
-        self._reset_quota_if_new_day()
-        self.quota_used_today = self.state.get("quota_used_today", 0)
+        # Load quota state from storage
+        state = self.storage.load_state()
+        self._reset_quota_if_new_day(state)
+        self.quota_used_today = state.get("quota_used_today", 0)
         self.quota_used_this_run = 0
     
-    def _load_state(self):
-        """Load state from file"""
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-                # Ensure quota fields exist
-                if "quota_used_today" not in state:
-                    state["quota_used_today"] = 0
-                if "quota_reset_date" not in state:
-                    state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
-                return state
-        return {
-            "quota_used_today": 0,
-            "quota_reset_date": datetime.now(timezone.utc).date().isoformat(),
-            "full_backup_completed": False,
-            "last_backup_date": None,
-            "total_videos_backed_up": 0
-        }
-    
-    def _save_state(self):
-        """Save state to file - preserves all state fields"""
-        # Update quota fields without overwriting other state data
-        self.state["quota_used_today"] = self.quota_used_today
-        self.state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
-        
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, indent=2)
-    
-    def _reset_quota_if_new_day(self):
+    def _reset_quota_if_new_day(self, state):
         """Reset quota counter if it's a new day (YouTube quota resets at midnight Pacific Time)"""
         today = datetime.now(timezone.utc).date().isoformat()
-        last_reset = self.state.get("quota_reset_date", today)
+        last_reset = state.get("quota_reset_date", today)
         
         if today != last_reset:
-            print(f"📅 New day detected - resetting quota counter (was {self.state.get('quota_used_today', 0)} units)")
-            self.state["quota_used_today"] = 0
-            self.state["quota_reset_date"] = today
-            self._save_state()
+            print(f"📅 New day detected - resetting quota counter (was {state.get('quota_used_today', 0)} units)")
+            state["quota_used_today"] = 0
+            state["quota_reset_date"] = today
+            self.quota_used_today = 0
+            self.storage.save_state(state)
     
     def add_quota_cost(self, cost):
-        """Track API quota usage"""
+        """Track API quota usage (in memory only)"""
         self.quota_used_today += cost
         self.quota_used_this_run += cost
-        self._save_state()
+    
+    def save_quota_state(self):
+        """Explicitly save quota state to disk"""
+        state = self.storage.load_state()
+        state["quota_used_today"] = self.quota_used_today
+        state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
+        self.storage.save_state(state)
     
     def get_quota_usage(self):
         """Get current quota usage for this run"""
