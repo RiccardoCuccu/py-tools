@@ -149,13 +149,10 @@ def main():
     print(f"🔹 Found {len(source_videos)} total videos")
     print(f"{'='*60}\n")
     
-    # Retrieve videos already present in backup channel
-    backed_up_titles = youtube.get_backup_channel_videos(config.backup_channel_id)
-    
     # Filter videos to backup
     videos_to_backup = []
     for video in source_videos:
-        if video['id'] not in archive and video['title'] not in backed_up_titles:
+        if video['id'] not in archive:
             videos_to_backup.append(video)
     
     if not videos_to_backup:
@@ -330,9 +327,6 @@ def main():
             print(f"   • Channel video list: ~{pages} units (API, {pages} pages)")
         else:
             print(f"   • RSS feed checks: 0 units (free)")
-        
-        backup_pages = (len(backed_up_titles) // 50) + 1
-        print(f"   • Backup channel check: ~{backup_pages} units ({backup_pages} pages)")
         
         if videos_backed_up > 0:
             print(f"   • Video uploads: {videos_backed_up * 1600} units (1600 per video)")
