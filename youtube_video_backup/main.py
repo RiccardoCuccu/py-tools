@@ -10,8 +10,8 @@ import time
 from datetime import datetime
 from config import Config, first_run_setup, DOWNLOAD_DIR
 from youtube_client import YouTubeClient, QUOTA_DAILY_LIMIT  # type: ignore
-from video_handler import VideoDownloader, VideoUploader, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD
-from utils import StorageManager, Logger
+from video_handler import VideoDownloader, upload_video, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD
+from utils import StorageManager, Logger, safe_remove_files
 
 # Video processing constants
 VIDEOS_PER_API_PAGE = 50
@@ -49,7 +49,6 @@ def main():
     logger = Logger(config)
     youtube = YouTubeClient(config, storage)  # Pass storage to YouTubeClient
     downloader = VideoDownloader(config)
-    uploader = VideoUploader(config, youtube)  # Pass youtube_client for quota tracking
     
     # Authenticate
     print("🔐 Authenticating...")
@@ -239,7 +238,7 @@ def main():
                 continue
             
             # Upload video
-            uploaded_video_id = uploader.upload(youtube.service, video_data)
+            uploaded_video_id = upload_video(youtube.service, video_data, config, youtube)
             
             # Save to archive
             storage.save_to_archive(video['id'])
@@ -258,7 +257,10 @@ def main():
             # Cleanup temporary files (if enabled)
             if config.delete_after_upload:  # type: ignore
                 print("\n🧹 Cleaning up temporary files...")
-                downloader.cleanup(video_data)
+                safe_remove_files(
+                    video_data.get('video_file'),
+                    video_data.get('thumbnail_file')
+                )
             else:
                 print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
                 print(f"   Video: {os.path.basename(video_data['video_file'])}")

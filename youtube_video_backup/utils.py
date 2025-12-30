@@ -133,3 +133,13 @@ class Logger:
     def log_warning(self, message):
         """Log warning message"""
         print(f"⚠️  {message}")
+
+
+def safe_remove_files(*filepaths):
+    """Remove files safely, ignoring errors"""
+    for filepath in filepaths:
+        if filepath and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                print(f"⚠️ Error removing {filepath}: {e}")
