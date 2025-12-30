@@ -9,7 +9,6 @@ import json
 from typing import Dict, Any, Optional
 import yt_dlp
 from googleapiclient.http import MediaFileUpload
-from config import COOKIE_FILE
 
 class VideoDownloader:
     """Manages video downloads with yt-dlp and API fallback"""
@@ -185,10 +184,6 @@ class VideoDownloader:
             print(f"   Note: Will accept any quality if HD not available")
         else:
             print(f"   Note: Requiring native quality (720p+) - will abort if not available")
-        
-        # Don't use cookies - they cause issues
-        if os.path.exists(COOKIE_FILE):
-            print(f"   Note: Skipping cookies (they often cause download failures)")
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]

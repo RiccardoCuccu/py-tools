@@ -43,7 +43,6 @@ CLIENT_SECRET_FILE = os.path.join(CONFIG_DIR, "client_secret.json") # OAuth cred
 TOKEN_FILE = os.path.join(CONFIG_DIR, "token.json")                 # OAuth token cache (auto-generated)
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")                 # Backup state tracker (auto-generated)
 ARCHIVE_FILE = os.path.join(CONFIG_DIR, "archive.txt")              # Archive of processed videos (auto-generated)
-COOKIE_FILE = os.path.join(CONFIG_DIR, "cookies.txt")               # YouTube cookies for yt-dlp (optional)
 LOG_FILE = os.path.join(CONFIG_DIR, "log.txt")                      # Log of backed up videos (auto-generated)
 API_KEY_FILE = os.path.join(CONFIG_DIR, "api_key.txt")              # YouTube API key for public data access (not in repository)
 QUEUE_FILE = os.path.join(CONFIG_DIR, "queue.json")                 # Persistent queue of videos to backup (auto-generated)
@@ -227,16 +226,6 @@ def first_run_setup():
         return False
     
     print("✓ API key file found\n")
-    
-    # Check cookies (optional but recommended)
-    if os.path.exists(COOKIE_FILE):
-        print("✓ Cookies file found\n")
-        print("   Note: YouTube cookies expire frequently.")
-        print("   If downloads fail, the script will work without cookies using android_embedded client.\n")
-    else:
-        print("ℹ️  No cookies file found (this is OK)\n")
-        print("   The script will use android_embedded client which works without authentication.")
-        print("   This method can download videos up to 1080p in most cases.\n")
     
     # Load or create config
     if not os.path.exists(CONFIG_FILE):
