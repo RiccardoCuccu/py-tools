@@ -9,9 +9,13 @@ import sys
 import time
 from datetime import datetime
 from config import Config, first_run_setup, DOWNLOAD_DIR
-from youtube_client import YouTubeClient  # type: ignore
-from video_handler import VideoDownloader, VideoUploader
+from youtube_client import YouTubeClient, QUOTA_DAILY_LIMIT  # type: ignore
+from video_handler import VideoDownloader, VideoUploader, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD
 from utils import StorageManager, Logger
+
+# Video processing constants
+VIDEOS_PER_API_PAGE = 50
+ESTIMATED_COST_PER_VIDEO = QUOTA_VIDEO_UPLOAD + QUOTA_THUMBNAIL_UPLOAD  # Upload + thumbnail
 
 def confirm_backup(video, auto_confirm=False):
     """Ask user confirmation for backing up a video"""
@@ -99,14 +103,13 @@ def main():
     if not source_videos:
         # Estimate quota cost
         if use_full_backup:
-            estimated_cost = 1 + (len(archive) // 50 + 1)  # Channel list + backup check
+            estimated_cost = 1 + (len(archive) // VIDEOS_PER_API_PAGE + 1)  # Channel list + backup check
             print(f"\n💰 Estimated quota cost for this run:")
             print(f"   • Full backup mode: ~{estimated_cost} units (video discovery)")
-            print(f"   • Plus: 1,600 units per video uploaded")
-            print(f"   • Plus: 50 units per thumbnail uploaded")
+            print(f"   • Plus: {QUOTA_VIDEO_UPLOAD} units per video uploaded")
+            print(f"   • Plus: {QUOTA_THUMBNAIL_UPLOAD} units per thumbnail uploaded")
             
-            daily_limit = 10000
-            remaining = daily_limit - youtube.get_quota_today()
+            remaining = QUOTA_DAILY_LIMIT - youtube.get_quota_today()
             
             if estimated_cost > remaining:
                 print(f"\n   ⚠️  WARNING: Not enough quota remaining!")
@@ -124,7 +127,7 @@ def main():
             print(f"{'='*60}")
             print(f"This will retrieve ALL videos from the source channel via API")
             print(f"Using API key (no OAuth needed for public source channel)")
-            print(f"Estimated quota cost: ~1 unit per 50 videos")
+            print(f"Estimated quota cost: ~1 unit per {VIDEOS_PER_API_PAGE} videos")
             print(f"After completion, future runs will use RSS (free)\n")
             
             if not config.auto_confirm:
@@ -203,20 +206,16 @@ def main():
         print(f"{'─'*60}")
         
         # Show current quota status before asking
-        daily_limit = 10000
         current_used = youtube.get_quota_today()
-        remaining = daily_limit - current_used
-        
-        # Estimate cost for this video (assume thumbnail exists)
-        video_cost = 1650  # 1600 upload + 50 thumbnail
+        remaining = QUOTA_DAILY_LIMIT - current_used
         
         print(f"\n💰 Quota status:")
-        print(f"   • Currently used today: {current_used:,} / {daily_limit:,} units")
+        print(f"   • Currently used today: {current_used:,} / {QUOTA_DAILY_LIMIT:,} units")
         print(f"   • Remaining: {remaining:,} units")
-        print(f"   • This video will cost: ~{video_cost} units (upload + thumbnail)")
-        print(f"   • After upload: ~{current_used + video_cost:,} / {daily_limit:,} units")
+        print(f"   • This video will cost: ~{ESTIMATED_COST_PER_VIDEO} units (upload + thumbnail)")
+        print(f"   • After upload: ~{current_used + ESTIMATED_COST_PER_VIDEO:,} / {QUOTA_DAILY_LIMIT:,} units")
         
-        if remaining < video_cost:
+        if remaining < ESTIMATED_COST_PER_VIDEO:
             print(f"\n   ⚠️  WARNING: Not enough quota for this video!")
             print(f"   Quota resets at midnight Pacific Time")
         
@@ -323,28 +322,27 @@ def main():
     if youtube.get_quota_usage() > 0:
         print(f"\n   Quota breakdown:")
         if use_full_backup:
-            pages = (len(source_videos) // 50) + 1
+            pages = (len(source_videos) // VIDEOS_PER_API_PAGE) + 1
             print(f"   • Channel video list: ~{pages} units (API, {pages} pages)")
         else:
             print(f"   • RSS feed checks: 0 units (free)")
         
         if videos_backed_up > 0:
-            print(f"   • Video uploads: {videos_backed_up * 1600} units (1600 per video)")
-            print(f"   • Thumbnail uploads: {videos_backed_up * 50} units (50 per thumbnail)")
+            print(f"   • Video uploads: {videos_backed_up * QUOTA_VIDEO_UPLOAD} units ({QUOTA_VIDEO_UPLOAD} per video)")
+            print(f"   • Thumbnail uploads: {videos_backed_up * QUOTA_THUMBNAIL_UPLOAD} units ({QUOTA_THUMBNAIL_UPLOAD} per thumbnail)")
     
     # Daily quota limit info
-    daily_quota_limit = 10000
     total_used_today = youtube.get_quota_today()
-    remaining_quota = daily_quota_limit - total_used_today
+    remaining_quota = QUOTA_DAILY_LIMIT - total_used_today
     
     print(f"\n   📊 Daily quota summary:")
     print(f"   • Total used today: {total_used_today:,} units")
-    print(f"   • Remaining: {remaining_quota:,} / {daily_quota_limit:,} units")
+    print(f"   • Remaining: {remaining_quota:,} / {QUOTA_DAILY_LIMIT:,} units")
     print(f"   • Reset: Midnight Pacific Time (PT/PDT)")
     
     if total_used_today > 8000:
         print(f"\n   ⚠️  WARNING: High quota usage!")
-        print(f"   YouTube API daily limit is 10,000 units")
+        print(f"   YouTube API daily limit is {QUOTA_DAILY_LIMIT:,} units")
     
     if use_full_backup and videos_backed_up < len(videos_to_backup):
         print(f"\n   ⚠️  Full backup incomplete - run again to continue")

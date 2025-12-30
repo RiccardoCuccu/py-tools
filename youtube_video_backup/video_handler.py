@@ -10,6 +10,13 @@ from typing import Dict, Any, Optional
 import yt_dlp
 from googleapiclient.http import MediaFileUpload
 
+# YouTube API Quota Costs (as per YouTube Data API v3 documentation)
+QUOTA_VIDEO_UPLOAD = 1600
+QUOTA_THUMBNAIL_UPLOAD = 50
+
+# Quality constraints
+MIN_NATIVE_HEIGHT = 1080  # Minimum resolution for "native quality"
+
 class VideoDownloader:
     """Manages video downloads with yt-dlp and API fallback"""
     
@@ -109,51 +116,30 @@ class VideoDownloader:
         """Download video using yt-dlp at native resolution"""
         print(f"   Method: yt-dlp")
         
-        # First, extract info without downloading to check quality
+        # Build format string based on quality requirements
+        # Prioritize m3u8 (HLS) streams which work reliably - Full HD quality
+        format_string = (
+            # Try m3u8/HLS 1080p stream
+            '96/'
+            # Then try DASH 1080p format with audio
+            '137+140'  # 1080p video (137) + audio (140)
+        )
+        
+        # Add height filter if native quality is required
         if self.config.require_native_quality:
-            print(f"   Checking available quality...")
-            check_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web_safari'],
-                        'player_skip': ['configs'],
-                    }
-                },
-            }
-            
-            try:
-                with yt_dlp.YoutubeDL(check_opts) as ydl:  # type: ignore[arg-type]
-                    info_check = ydl.extract_info(video_url, download=False)  # type: ignore
-                    if info_check:
-                        # Check for available formats
-                        formats = info_check.get('formats', [])  # type: ignore
-                        max_height = 0
-                        for fmt in formats:  # type: ignore
-                            height = fmt.get('height', 0)
-                            if height and height > max_height:
-                                max_height = height
-                        
-                        if max_height < 720:
-                            print(f"   ❌ Quality check failed: Best available is {max_height}p < 720p")
-                            print(f"   Skipping download (native quality required)")
-                            return None
-                        else:
-                            print(f"   ✓ Quality check passed: {max_height}p available")
-            except Exception as e:
-                print(f"   ⚠️ Could not check quality: {e}")
-                print(f"   Proceeding with download attempt...")
+            format_string = f"({format_string})[height>={MIN_NATIVE_HEIGHT}]"
+            print(f"   Note: Requiring native quality ({MIN_NATIVE_HEIGHT}p+) - will abort if not available")
+        else:
+            # Add fallback formats for lower quality
+            format_string += (
+                # Fallback to combined formats
+                '/bestvideo+bestaudio/'
+                'best[ext=mp4]/best'
+            )
+            print(f"   Note: Will accept any quality if Full HD not available")
         
         ydl_opts = {
-            # Prioritize m3u8 (HLS) streams which work reliably - HD quality
-            'format': (
-                # Try m3u8/HLS streams first (ID 96=1080p, 95=720p)
-                '96/95/'
-                # Then try DASH formats with separate video+audio
-                '137+140/'  # 1080p video (137) + audio (140)
-                '136+140/'  # 720p video (136) + audio (140)
-            ),
+            'format': format_string,
             'merge_output_format': 'mp4',
             'writeinfojson': True,
             'writethumbnail': True,
@@ -173,17 +159,6 @@ class VideoDownloader:
                 'Accept-Language': 'en-US,en;q=0.9',
             },
         }
-        
-        # Add fallback formats only if native quality is not required
-        if not self.config.require_native_quality:
-            ydl_opts['format'] += (
-                # Fallback to combined formats
-                '/bestvideo+bestaudio/'
-                'best[ext=mp4]/best'
-            )
-            print(f"   Note: Will accept any quality if HD not available")
-        else:
-            print(f"   Note: Requiring native quality (720p+) - will abort if not available")
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
@@ -254,12 +229,12 @@ class VideoDownloader:
             video_data = video_response['items'][0]
             snippet = video_data['snippet']
             
-            # Use yt-dlp with specific format (96=1080p, 95=720p m3u8)
+            # Use yt-dlp with specific format (96=1080p m3u8)
             print(f"   Checking available quality...")
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'format': '96/95',  # Try 1080p or 720p m3u8 streams
+                'format': '96',
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['android'],
@@ -277,8 +252,8 @@ class VideoDownloader:
                 # Check quality
                 height = info.get('height', 0)  # type: ignore
                 
-                if self.config.require_native_quality and height < 720:
-                    print(f"   ❌ Quality check failed: Best available is {height}p < 720p")
+                if self.config.require_native_quality and height < MIN_NATIVE_HEIGHT:
+                    print(f"   ❌ Quality check failed: Best available is {height}p < {MIN_NATIVE_HEIGHT}p")
                     print(f"   Skipping download (native quality required)")
                     return None
                 else:
@@ -433,7 +408,7 @@ class VideoUploader:
         
         # Track quota cost
         if self.youtube_client:
-            self.youtube_client.add_quota_cost(1600)
+            self.youtube_client.add_quota_cost(QUOTA_VIDEO_UPLOAD)
         
         response = None
         print("   Uploading...", end='', flush=True)
@@ -457,7 +432,7 @@ class VideoUploader:
                 
                 # Track quota cost
                 if self.youtube_client:
-                    self.youtube_client.add_quota_cost(50)
+                    self.youtube_client.add_quota_cost(QUOTA_THUMBNAIL_UPLOAD)
                 
                 print("\r✓ Thumbnail uploaded successfully!")
             except Exception as e:

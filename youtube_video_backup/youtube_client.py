@@ -16,6 +16,12 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from config import SCOPES, CLIENT_SECRET_FILE, TOKEN_FILE, API_KEY_FILE, STATE_FILE
 
+# YouTube API Quota Costs (as per YouTube Data API v3 documentation)
+QUOTA_DAILY_LIMIT = 10000
+QUOTA_HIGH_USAGE_THRESHOLD = 8000
+QUOTA_CHANNEL_LIST = 1
+QUOTA_PLAYLIST_ITEMS_LIST = 1
+
 class YouTubeClient:
     """Manages YouTube API interactions and authentication"""
     
@@ -84,19 +90,18 @@ class YouTubeClient:
     
     def show_quota_status(self):
         """Display current quota status"""
-        daily_limit = 10000
-        remaining = daily_limit - self.quota_used_today
+        remaining = QUOTA_DAILY_LIMIT - self.quota_used_today
         
         print(f"\n{'='*60}")
         print(f"📊 API QUOTA STATUS")
         print(f"{'='*60}")
         print(f"  • Used today: {self.quota_used_today:,} units")
-        print(f"  • Remaining: {remaining:,} / {daily_limit:,} units")
+        print(f"  • Remaining: {remaining:,} / {QUOTA_DAILY_LIMIT:,} units")
         print(f"  • Reset: Midnight Pacific Time (PT/PDT)")
         
-        if self.quota_used_today > 8000:
+        if self.quota_used_today > QUOTA_HIGH_USAGE_THRESHOLD:
             print(f"\n  ⚠️  WARNING: High quota usage!")
-            print(f"  You're close to the daily limit of 10,000 units")
+            print(f"  You're close to the daily limit of {QUOTA_DAILY_LIMIT:,} units")
         
         print(f"{'='*60}\n")
     
@@ -158,7 +163,7 @@ class YouTubeClient:
         """Retrieve ALL videos from channel via API using public API key"""
         print(f"\n📡 Fetching ALL videos from channel via API...")
         print(f"   Using API key for public data access")
-        print(f"   This will use API quota (~1 unit per 50 videos)")
+        print(f"   This will use API quota (~{QUOTA_PLAYLIST_ITEMS_LIST} unit per 50 videos)")
         
         # Load API key and create service
         api_key = self._load_api_key()
@@ -175,7 +180,7 @@ class YouTubeClient:
             id=channel_id,
             fields='items(contentDetails/relatedPlaylists/uploads)'
         ).execute()
-        self.add_quota_cost(1)
+        self.add_quota_cost(QUOTA_CHANNEL_LIST)
         
         if not channel_response.get('items'):
             print("⚠️  Channel not found!")
@@ -199,7 +204,7 @@ class YouTubeClient:
                 pageToken=next_page_token,
                 fields='nextPageToken,items(snippet(resourceId/videoId,title,publishedAt))'
             ).execute()
-            self.add_quota_cost(1)
+            self.add_quota_cost(QUOTA_PLAYLIST_ITEMS_LIST)
             
             for item in playlist_response.get('items', []):
                 video_id = item['snippet']['resourceId']['videoId']
