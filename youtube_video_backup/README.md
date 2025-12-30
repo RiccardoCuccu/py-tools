@@ -4,19 +4,17 @@
 
 ## How it Works
 
-- The script uses OAuth 2.0 for uploading to the backup channel and an API key for reading public data from the source channel.
-- On first run, it performs a full backup retrieving ALL videos from the source channel via YouTube Data API.
-- Subsequent runs use RSS feed to check for new videos (~15 most recent, no API quota required).
-- It checks both a local archive file and the backup channel's existing videos to avoid duplicates.
-- For each new video, the script prompts for user confirmation before proceeding (unless AUTO_CONFIRM is enabled).
-- The video is downloaded with all metadata (title, description, tags, category) and thumbnail.
-- The video is then uploaded to the backup channel with all original metadata preserved and set as private.
-- After successful upload, the video ID is saved to the local archive and temporary files are cleaned up.
-- Progress and quota usage are tracked throughout the process.
+- On first run, performs a complete backup of ALL videos from the source channel via YouTube Data API.
+- Subsequent runs use RSS feed to check for new videos (no API quota required).
+- Downloads videos with all original metadata at native quality (720p+).
+- Re-uploads to backup channel as private videos with identical metadata.
+- Checks for duplicates against both local archive and existing backup channel videos.
+- Can resume interrupted backups from a persistent queue without re-fetching video lists.
+- Tracks API quota usage and provides detailed progress reporting.
 
 ## Usage
 ```
-python youtube_video_backup.py
+python main.py
 ```
 
 On the first run, the script will guide you through initial setup, asking for source and destination channel IDs.
