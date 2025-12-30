@@ -17,6 +17,72 @@ from utils import StorageManager, Logger, safe_remove_files
 VIDEOS_PER_API_PAGE = 50
 ESTIMATED_COST_PER_VIDEO = QUOTA_VIDEO_UPLOAD + QUOTA_THUMBNAIL_UPLOAD  # Upload + thumbnail
 
+def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quota_today, 
+                         use_full_backup=False, source_videos_count=0, interruption_reason=None):
+    """Print unified backup summary - handles both success and interruption cases"""
+    remaining = total_videos - videos_backed_up
+    quota_remaining = QUOTA_DAILY_LIMIT - quota_today
+    
+    # Header - same for all interruptions
+    print(f"\n{'='*60}")
+    if interruption_reason:
+        print(f"⚠️  BACKUP INTERRUPTED")
+    else:
+        print(f"🎉 Backup operation completed!")
+    print(f"{'='*60}")
+    
+    # Session results
+    print(f"Session Results:")
+    if interruption_reason:
+        print(f"   • Videos backed up: {videos_backed_up} / {total_videos}")
+        print(f"   • Still in queue: {remaining}")
+    else:
+        print(f"   • Videos backed up this run: {videos_backed_up}")
+        print(f"   • Total videos backed up (all time): {state.get('total_videos_backed_up', 0)}")
+    
+    # Quota breakdown (only if quota was used)
+    if quota_used > 0:
+        print(f"\n💰 API Quota Usage:")
+        print(f"   • Used this session: {quota_used:,} units")
+        
+        # Show breakdown only if not interrupted or completed successfully
+        if not interruption_reason or videos_backed_up > 0:
+            if use_full_backup:
+                pages = (source_videos_count // VIDEOS_PER_API_PAGE) + 1
+                print(f"     - Video discovery: ~{pages} units (API)")
+            else:
+                print(f"     - Video discovery: 0 units (RSS)")
+            
+            if videos_backed_up > 0:
+                print(f"     - Video uploads: {videos_backed_up * QUOTA_VIDEO_UPLOAD:,} units")
+                print(f"     - Thumbnail uploads: {videos_backed_up * QUOTA_THUMBNAIL_UPLOAD:,} units")
+        
+        print(f"\n   📊 Daily quota summary:")
+        print(f"   • Total used today: {quota_today:,} / {QUOTA_DAILY_LIMIT:,} units")
+        print(f"   • Remaining: {quota_remaining:,} units")
+        
+        if quota_today > 8000:
+            print(f"\n   ⚠️  WARNING: High quota usage!")
+    
+    # Interruption-specific information
+    if interruption_reason:
+        print(f"\n⚠️  Reason: {interruption_reason}")
+        
+        if "upload limit" in interruption_reason.lower():
+            print(f"\n📋 Why this happened:")
+            print(f"   YouTube limits daily uploads to ~10-15 videos for")
+            print(f"   non-verified accounts (~50-100 for verified accounts).")
+            print(f"\n💡 What to do next:")
+            print(f"   1. Wait 24 hours for limit reset")
+            print(f"   2. Verify your account: https://www.youtube.com/verify")
+            print(f"   3. Run this script again - it will resume automatically")
+        else:
+            print(f"   → Run the script again to continue from where you left off")
+        
+        print(f"\n💡 All videos are saved in queue.json - no progress lost!")
+    
+    print(f"{'='*60}\n")
+
 def confirm_backup(video, auto_confirm=False):
     """Ask user confirmation for backing up a video"""
     if auto_confirm:
@@ -44,11 +110,12 @@ def main():
     # Load configuration
     config = Config.load()
     
-    # Initialize components
+    # Initialize components (StorageManager first!)
     storage = StorageManager(config)
     logger = Logger(config)
     youtube = YouTubeClient(config, storage)  # Pass storage to YouTubeClient
     downloader = VideoDownloader(config)
+    # Note: upload_video is now a function, not a class
     
     # Authenticate
     print("🔐 Authenticating...")
@@ -198,6 +265,7 @@ def main():
     
     # Process each video
     videos_backed_up = 0
+    interruption_reason = None
     
     for idx, video in enumerate(videos_to_backup, 1):
         print(f"\n{'─'*60}")
@@ -281,24 +349,13 @@ def main():
             
             # Check for specific YouTube errors
             if "uploadLimitExceeded" in error_str:
-                print(f"\n{'='*60}")
-                print(f"⚠️  UPLOAD LIMIT EXCEEDED")
-                print(f"{'='*60}")
-                print(f"YouTube has daily upload limits:")
-                print(f"  • Non-verified accounts: ~10-15 videos/day")
-                print(f"  • Verified accounts: ~50-100 videos/day")
-                print(f"\nSolutions:")
-                print(f"  1. Verify your account: https://www.youtube.com/verify")
-                print(f"  2. Wait 24 hours for limit reset")
-                print(f"  3. Request quota increase via YouTube support")
-                print(f"\nVideos backed up so far: {videos_backed_up}")
-                print(f"Remaining videos: {len(videos_to_backup) - idx}")
-                print(f"{'='*60}\n")
+                interruption_reason = "Upload limit exceeded"
                 break
             
             if not config.auto_confirm:
                 response = input("Continue with the next video? (y/n): ").lower()
                 if response != 'y':
+                    interruption_reason = "User stopped backup"
                     break
             else:
                 print("Auto-continuing to next video...")
@@ -314,42 +371,17 @@ def main():
         print(f"✓ Future runs will use RSS for incremental updates (no quota)")
         print(f"✓ To force another full backup, delete: state.json")
     
-    # Summary
-    print(f"\n{'='*60}")
-    print(f"🎉 Backup operation completed!")
-    print(f"   Videos backed up this run: {videos_backed_up}")
-    print(f"   Total videos backed up: {state.get('total_videos_backed_up', 0)}")
-    print(f"   API quota used this run: {youtube.get_quota_usage()} units")
-    
-    # Quota breakdown
-    if youtube.get_quota_usage() > 0:
-        print(f"\n   Quota breakdown:")
-        if use_full_backup:
-            pages = (len(source_videos) // VIDEOS_PER_API_PAGE) + 1
-            print(f"   • Channel video list: ~{pages} units (API, {pages} pages)")
-        else:
-            print(f"   • RSS feed checks: 0 units (free)")
-        
-        if videos_backed_up > 0:
-            print(f"   • Video uploads: {videos_backed_up * QUOTA_VIDEO_UPLOAD} units ({QUOTA_VIDEO_UPLOAD} per video)")
-            print(f"   • Thumbnail uploads: {videos_backed_up * QUOTA_THUMBNAIL_UPLOAD} units ({QUOTA_THUMBNAIL_UPLOAD} per thumbnail)")
-    
-    # Daily quota limit info
-    total_used_today = youtube.get_quota_today()
-    remaining_quota = QUOTA_DAILY_LIMIT - total_used_today
-    
-    print(f"\n   📊 Daily quota summary:")
-    print(f"   • Total used today: {total_used_today:,} units")
-    print(f"   • Remaining: {remaining_quota:,} / {QUOTA_DAILY_LIMIT:,} units")
-    print(f"   • Reset: Midnight Pacific Time (PT/PDT)")
-    
-    if total_used_today > 8000:
-        print(f"\n   ⚠️  WARNING: High quota usage!")
-        print(f"   YouTube API daily limit is {QUOTA_DAILY_LIMIT:,} units")
-    
-    if use_full_backup and videos_backed_up < len(videos_to_backup):
-        print(f"\n   ⚠️  Full backup incomplete - run again to continue")
-    print(f"{'='*60}\n")
+    # Print unified summary
+    print_backup_summary(
+        videos_backed_up=videos_backed_up,
+        total_videos=len(videos_to_backup),
+        state=state,
+        quota_used=youtube.get_quota_usage(),
+        quota_today=youtube.get_quota_today(),
+        use_full_backup=use_full_backup,
+        source_videos_count=len(source_videos),
+        interruption_reason=interruption_reason
+    )
 
 if __name__ == '__main__':
     try:
