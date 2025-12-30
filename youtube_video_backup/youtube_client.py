@@ -7,7 +7,7 @@ Handles all YouTube API interactions, OAuth authentication, and RSS feed parsing
 import os
 import sys
 import json
-from typing import List, Dict, Set, Optional, Any
+from typing import Optional
 from datetime import datetime, timezone
 import feedparser
 from googleapiclient.discovery import build, Resource
@@ -22,7 +22,6 @@ class YouTubeClient:
     def __init__(self, config):
         self.config = config
         self.service: Optional[Resource] = None
-        self.public_service: Optional[Resource] = None
         
         # Load quota state
         self.state = self._load_state()
@@ -128,15 +127,6 @@ class YouTubeClient:
         self.service = build("youtube", "v3", credentials=credentials)
         return self.service
     
-    def get_public_service(self):
-        """Get YouTube service with API key for public data access"""
-        api_key = self._load_api_key()
-        if not api_key:
-            print("ERROR: API key not found!")
-            sys.exit(1)
-        self.public_service = build("youtube", "v3", developerKey=api_key)
-        return self.public_service
-    
     def _load_api_key(self):
         """Load API key from file"""
         if os.path.exists(API_KEY_FILE):
@@ -170,14 +160,17 @@ class YouTubeClient:
         print(f"   Using API key for public data access")
         print(f"   This will use API quota (~1 unit per 50 videos)")
         
-        # Get public YouTube service
-        if not self.public_service:
-            self.get_public_service()
+        # Load API key and create service
+        api_key = self._load_api_key()
+        if not api_key:
+            print("ERROR: API key not found!")
+            sys.exit(1)
         
-        assert self.public_service is not None  # Type hint for Pylance
+        # Create public service with API key
+        public_service = build("youtube", "v3", developerKey=api_key)
         
         # Get the channel's "uploads" playlist
-        channel_response = self.public_service.channels().list(  # type: ignore
+        channel_response = public_service.channels().list(
             part='contentDetails',
             id=channel_id,
             fields='items(contentDetails/relatedPlaylists/uploads)'
@@ -199,7 +192,7 @@ class YouTubeClient:
             page_count += 1
             print(f"   Fetching page {page_count}...", end='', flush=True)
             
-            playlist_response = self.public_service.playlistItems().list(  # type: ignore
+            playlist_response = public_service.playlistItems().list(
                 part='snippet',
                 playlistId=uploads_playlist_id,
                 maxResults=50,
@@ -225,52 +218,3 @@ class YouTubeClient:
         
         print(f"✓ Found {len(videos)} total videos in channel")
         return videos
-    
-    def get_backup_channel_videos(self, channel_id):
-        """Retrieve all video titles from the backup channel"""
-        print(f"\n📋 Checking videos already present in backup channel...")
-        
-        # Ensure we have authenticated service
-        if not self.service:
-            self.authenticate()
-        
-        assert self.service is not None  # Type hint for Pylance
-        
-        # Get the channel's "uploads" playlist
-        channel_response = self.service.channels().list(  # type: ignore
-            part='contentDetails',
-            id=channel_id,
-            fields='items(contentDetails/relatedPlaylists/uploads)'
-        ).execute()
-        self.add_quota_cost(1)
-        
-        if not channel_response.get('items'):
-            print("⚠️  Backup channel not found!")
-            return set()
-        
-        uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-        
-        # Retrieve all video titles from the playlist
-        backed_up_titles = set()
-        next_page_token = None
-        
-        while True:
-            playlist_response = self.service.playlistItems().list(  # type: ignore
-                part='snippet',
-                playlistId=uploads_playlist_id,
-                maxResults=50,
-                pageToken=next_page_token,
-                fields='nextPageToken,items(snippet/title)'
-            ).execute()
-            self.add_quota_cost(1)
-            
-            for item in playlist_response.get('items', []):
-                title = item['snippet']['title']
-                backed_up_titles.add(title)
-            
-            next_page_token = playlist_response.get('nextPageToken')
-            if not next_page_token:
-                break
-        
-        print(f"✓ Found {len(backed_up_titles)} videos in backup channel")
-        return backed_up_titles
