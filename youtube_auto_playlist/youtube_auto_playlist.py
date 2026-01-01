@@ -5,6 +5,7 @@ import time
 import xml.etree.ElementTree as ET
 import urllib.request
 from datetime import datetime, timedelta, timezone
+import pytz
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
@@ -15,12 +16,12 @@ from google.oauth2.credentials import Credentials
 # =====================================
 
 # Script Behavior
-POLL_INTERVAL_MINUTES = 360                             # How often to check for new videos (6 hours to save quota)
+POLL_INTERVAL_MINUTES = 60                              # How often to check for new videos (1 hours to save quota)
 MAX_VIDEOS_PER_CHANNEL = 5                              # Max videos to check per channel each time
 RETRY_DELAY_MINUTES = 60                                # Wait time after errors before retry (1 hour for quota errors)
 INCLUDE_SHORTS = False                                  # Set to True to include YouTube Shorts, False to exclude them
                                                         # Note: Filtering shorts costs +1 API unit per channel (to check video durations)
-SHORTS_MAX_DURATION_SECONDS = 90                        # Maximum duration in seconds to consider a video as a Short (default: 90)
+SHORTS_MAX_DURATION_SECONDS = 120                       # Maximum duration in seconds to consider a video as a Short (default: 120)
 USE_RSS_FEEDS = True                                    # Set to True to use RSS feeds (FREE, no quota usage), False to use API
 DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
 
@@ -30,6 +31,7 @@ FILTER_MODE = "include"                                 # "include" = only video
 FILTER_KEYWORDS = []                                    # List of keywords to include/exclude (e.g., ["tutorial", "review"]).
 
 # File Paths
+CONFIG_DIR = "config"                                   # Configuration subdirectory for all generated files
 CONFIG_FILE = "config.yaml"                             # User-specific settings (not in repository)
 CLIENT_SECRET_FILE = "client_secret.json"               # OAuth credentials file (not in repository)
 TOKEN_FILE = "token.json"                               # OAuth token cache (auto-generated)
@@ -48,19 +50,26 @@ SCOPES = ["https://www.googleapis.com/auth/youtube"]
 POLL_INTERVAL_SECONDS = POLL_INTERVAL_MINUTES * 60
 RETRY_DELAY_SECONDS = RETRY_DELAY_MINUTES * 60
 
+# Pacific Time timezone (handles PST/PDT automatically)
+PACIFIC_TZ = pytz.timezone('US/Pacific')
+
 # Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Make all file paths relative to script directory
-CONFIG_FILE = os.path.join(SCRIPT_DIR, CONFIG_FILE)
-CLIENT_SECRET_FILE = os.path.join(SCRIPT_DIR, CLIENT_SECRET_FILE)
-TOKEN_FILE = os.path.join(SCRIPT_DIR, TOKEN_FILE)
-STATE_FILE = os.path.join(SCRIPT_DIR, STATE_FILE)
-LOG_FILE = os.path.join(SCRIPT_DIR, LOG_FILE)
-SUBSCRIPTIONS_CACHE_FILE = os.path.join(SCRIPT_DIR, SUBSCRIPTIONS_CACHE_FILE)
+# Create config directory path
+CONFIG_DIR = os.path.join(SCRIPT_DIR, CONFIG_DIR)
+
+# Make all file paths relative to config directory
+CONFIG_FILE = os.path.join(CONFIG_DIR, CONFIG_FILE)
+CLIENT_SECRET_FILE = os.path.join(CONFIG_DIR, CLIENT_SECRET_FILE)
+TOKEN_FILE = os.path.join(CONFIG_DIR, TOKEN_FILE)
+STATE_FILE = os.path.join(CONFIG_DIR, STATE_FILE)
+LOG_FILE = os.path.join(CONFIG_DIR, LOG_FILE)
+SUBSCRIPTIONS_CACHE_FILE = os.path.join(CONFIG_DIR, SUBSCRIPTIONS_CACHE_FILE)
 
 # Global quota tracking
 quota_used = 0
+
 
 # =====================================
 # CACHING UTILITIES
@@ -91,6 +100,7 @@ def load_subscriptions_cache():
         print(f"⚠ Cache load error: {e}")
         return None
 
+
 def save_subscriptions_cache(subscriptions, etag=None):
     """Save subscriptions list to cache"""
     cache_data = {
@@ -103,6 +113,7 @@ def save_subscriptions_cache(subscriptions, etag=None):
         json.dump(cache_data, f, indent=2)
     
     print(f"✓ Subscriptions cached")
+
 
 # =====================================
 # LOGGING UTILITIES
@@ -118,6 +129,7 @@ def log_added_video(video_id, video_title, channel_title):
         f.write(log_entry)
     
     print(f"  ✓ {video_title} - {video_url}")
+
 
 # =====================================
 # FIRST RUN SETUP
@@ -137,9 +149,11 @@ def create_default_config():
     print(f"✓ Created {CONFIG_FILE}")
     return default_config
 
+
 def check_client_secret():
     """Check if client_secret.json exists"""
     return os.path.exists(CLIENT_SECRET_FILE)
+
 
 def prompt_for_playlist_id():
     """Prompt user for Target Playlist ID"""
@@ -161,11 +175,17 @@ def prompt_for_playlist_id():
             return playlist_id
         print("❌ Invalid Playlist ID. Please try again.\n")
 
+
 def first_run_setup():
     """Guide user through first-run configuration"""
     print("\n" + "="*60)
     print("FIRST RUN SETUP - YouTube Subscription Auto Playlist")
     print("="*60 + "\n")
+    
+    # Create config directory if it doesn't exist
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR)
+        print(f"✓ Created configuration directory: {CONFIG_DIR}\n")
     
     # Check for client_secret.json first
     if not check_client_secret():
@@ -222,7 +242,7 @@ def first_run_setup():
         print(f"   → In the popup, click 'DOWNLOAD JSON'")
         print(f"   → Or: Go to Credentials page → Click download icon (⬇)")
         print(f"   → Rename the file to: {os.path.basename(CLIENT_SECRET_FILE)}")
-        print(f"   → Move it to: {os.path.dirname(CLIENT_SECRET_FILE)}\n")
+        print(f"   → Move it to: {CONFIG_DIR}\n")
         
         print(f"┌────────────────────────────────────────────────────────┐")
         print(f"After completing these steps, run the script again.")
@@ -296,6 +316,7 @@ def first_run_setup():
     
     print("✓ Configuration complete")
     print(f"\nMonitoring settings:")
+    print(f"  • Configuration directory: {CONFIG_DIR}")
     print(f"  • Target Playlist: {config['youtube']['target_playlist_id']}")
     print(f"  • Check interval: {POLL_INTERVAL_MINUTES} minutes ({POLL_INTERVAL_MINUTES // 60} hours)")
     print(f"  • Videos per channel: {MAX_VIDEOS_PER_CHANNEL} latest")
@@ -307,7 +328,9 @@ def first_run_setup():
     if ENABLE_KEYWORD_FILTER and FILTER_KEYWORDS:
         print(f"    - Mode: {FILTER_MODE.upper()}")
         print(f"    - Keywords: {', '.join(FILTER_KEYWORDS)}")
-    print(f"  • Log file: {LOG_FILE}")
+    print(f"  • Log file: {os.path.basename(LOG_FILE)}")
+    print(f"  • State file: {os.path.basename(STATE_FILE)}")
+    print(f"  • Cache file: {os.path.basename(SUBSCRIPTIONS_CACHE_FILE)}")
     
     if not USE_RSS_FEEDS:
         print(f"\n⚠️ QUOTA WARNING:")
@@ -331,6 +354,7 @@ def first_run_setup():
     print("\nSetup complete! Starting authentication...\n")
     return True
 
+
 # =====================================
 # CONFIG & STATE UTILITIES
 # =====================================
@@ -340,6 +364,7 @@ def load_config():
     with open(CONFIG_FILE, "r") as file:
         return yaml.safe_load(file)
 
+
 def load_state():
     """Load local state to avoid duplicate processing"""
     if not os.path.exists(STATE_FILE):
@@ -347,7 +372,7 @@ def load_state():
             "last_check_time": None,
             "processed_videos": [],
             "quota_used_today": 0,
-            "quota_reset_date": datetime.now(timezone.utc).date().isoformat()
+            "quota_reset_date": datetime.now(PACIFIC_TZ).date().isoformat()
         }
     with open(STATE_FILE, "r") as file:
         state = json.load(file)
@@ -355,13 +380,15 @@ def load_state():
         if "quota_used_today" not in state:
             state["quota_used_today"] = 0
         if "quota_reset_date" not in state:
-            state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
+            state["quota_reset_date"] = datetime.now(PACIFIC_TZ).date().isoformat()
         return state
+
 
 def save_state(state):
     """Persist state locally"""
     with open(STATE_FILE, "w") as file:
         json.dump(state, file, indent=2)
+
 
 # =====================================
 # AUTHENTICATION
@@ -393,6 +420,7 @@ def authenticate():
 
     return build("youtube", "v3", credentials=credentials)
 
+
 # =====================================
 # QUOTA TRACKING UTILITIES
 # =====================================
@@ -402,17 +430,25 @@ def add_quota_cost(cost):
     global quota_used
     quota_used += cost
 
+
 def reset_quota_if_new_day(state):
     """Reset quota counter if it's a new day (YouTube quota resets at midnight Pacific Time)"""
-    today = datetime.now(timezone.utc).date().isoformat()
-    last_reset = state.get("quota_reset_date", today)
+    # Get current time in Pacific timezone
+    now_pacific = datetime.now(PACIFIC_TZ)
+    current_date_pacific = now_pacific.date().isoformat()
     
-    if today != last_reset:
-        print(f"New day detected - resetting quota counter (was {state.get('quota_used_today', 0)} units)")
+    # Get last reset date (stored as Pacific date)
+    last_reset = state.get("quota_reset_date", current_date_pacific)
+    
+    # Check if we've crossed midnight Pacific Time
+    if current_date_pacific != last_reset:
+        print(f"📅 New day detected in Pacific Time - resetting quota counter")
+        print(f"   (was {state.get('quota_used_today', 0)} units)")
         state["quota_used_today"] = 0
-        state["quota_reset_date"] = today
+        state["quota_reset_date"] = current_date_pacific
         return True
     return False
+
 
 # =====================================
 # KEYWORD FILTERING UTILITIES
@@ -434,6 +470,7 @@ def matches_keyword_filter(title):
     else:
         # Invalid mode, default to accepting all
         return True
+
 
 # =====================================
 # YOUTUBE API LOGIC
@@ -482,6 +519,7 @@ def get_all_subscriptions(youtube_service):
     save_subscriptions_cache(subscriptions, etag)
     
     return subscriptions
+
 
 def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_after):
     """Get videos published after a certain time from a channel using RSS feed"""
@@ -581,6 +619,7 @@ def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_af
         print(f"RSS Error: {e}")
         return []
 
+
 def get_recent_videos_from_channel(youtube_service, channel_id, published_after):
     """Get videos published after a certain time from a channel using API"""
     request = youtube_service.search().list(
@@ -643,6 +682,7 @@ def get_recent_videos_from_channel(youtube_service, channel_id, published_after)
     
     return videos
 
+
 def parse_duration(duration_str):
     """Parse ISO 8601 duration string to seconds (e.g., PT1M30S -> 90)"""
     import re
@@ -659,6 +699,7 @@ def parse_duration(duration_str):
     seconds = int(match.group(3) or 0)
     
     return hours * 3600 + minutes * 60 + seconds
+
 
 def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
     """Add a video to the target playlist (or simulate in dry run mode)"""
@@ -685,11 +726,13 @@ def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
         print(f"  ⚠ Failed to add video: {e}")
         return False
 
+
 # =====================================
 # MAIN EXECUTION LOGIC
 # =====================================
 
 def run():
+    """Main execution function for checking and adding videos"""
     global quota_used
     
     config = load_config()
@@ -812,6 +855,7 @@ def run():
     print(f"Total quota used today: {quota_used} units")
     print(f"Estimated remaining daily quota: {remaining_quota} / {daily_quota_limit} units")
     print(f"{'='*60}\n")
+
 
 # =====================================
 # ENTRY POINT

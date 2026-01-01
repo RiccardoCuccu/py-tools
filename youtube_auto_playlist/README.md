@@ -24,6 +24,6 @@ On the first run, the script will guide you through initial setup.
 To use `youtube_auto_playlist.py`, you'll need to install the following Python libraries:
 
 ```
-pip install google-api-python-client google-auth google-auth-oauthlib pyyaml
+pip install google-api-python-client google-auth google-auth-oauthlib pyyaml pytz
 
 ```
