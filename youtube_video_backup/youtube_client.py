@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Optional
 from datetime import datetime, timezone
+import pytz
 import feedparser
 from googleapiclient.discovery import build, Resource
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -20,6 +21,9 @@ QUOTA_DAILY_LIMIT = 10000
 QUOTA_HIGH_USAGE_THRESHOLD = 8000
 QUOTA_CHANNEL_LIST = 1
 QUOTA_PLAYLIST_ITEMS_LIST = 1
+
+# Pacific Time timezone (handles PST/PDT automatically)
+PACIFIC_TZ = pytz.timezone('US/Pacific')
 
 
 class YouTubeClient:
@@ -38,13 +42,19 @@ class YouTubeClient:
     
     def _reset_quota_if_new_day(self, state):
         """Reset quota counter if it's a new day (YouTube quota resets at midnight Pacific Time)"""
-        today = datetime.now(timezone.utc).date().isoformat()
-        last_reset = state.get("quota_reset_date", today)
+        # Get current time in Pacific timezone
+        now_pacific = datetime.now(PACIFIC_TZ)
+        current_date_pacific = now_pacific.date().isoformat()
         
-        if today != last_reset:
-            print(f"📅 New day detected - resetting quota counter (was {state.get('quota_used_today', 0)} units)")
+        # Get last reset date (stored as Pacific date)
+        last_reset = state.get("quota_reset_date", current_date_pacific)
+        
+        # Check if we've crossed midnight Pacific Time
+        if current_date_pacific != last_reset:
+            print(f"📅 New day detected in Pacific Time - resetting quota counter")
+            print(f"   (was {state.get('quota_used_today', 0)} units)")
             state["quota_used_today"] = 0
-            state["quota_reset_date"] = today
+            state["quota_reset_date"] = current_date_pacific
             self.quota_used_today = 0
             self.storage.save_state(state)
     
@@ -57,7 +67,7 @@ class YouTubeClient:
         """Explicitly save quota state to disk"""
         state = self.storage.load_state()
         state["quota_used_today"] = self.quota_used_today
-        state["quota_reset_date"] = datetime.now(timezone.utc).date().isoformat()
+        state["quota_reset_date"] = datetime.now(PACIFIC_TZ).date().isoformat()
         self.storage.save_state(state)
     
     def get_quota_usage(self):
