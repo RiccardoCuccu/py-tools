@@ -21,6 +21,7 @@ QUOTA_HIGH_USAGE_THRESHOLD = 8000
 QUOTA_CHANNEL_LIST = 1
 QUOTA_PLAYLIST_ITEMS_LIST = 1
 
+
 class YouTubeClient:
     """Manages YouTube API interactions and authentication"""
     

@@ -17,6 +17,7 @@ QUOTA_THUMBNAIL_UPLOAD = 50
 # Quality constraints
 MIN_NATIVE_HEIGHT = 1080  # Minimum resolution for "native quality"
 
+
 class VideoDownloader:
     """Manages video downloads with yt-dlp"""
     
@@ -78,10 +79,39 @@ class VideoDownloader:
         return None
     
     @staticmethod
-    def _format_file_info(filepath, resolution):
-        """Format file display with optional resolution"""
+    def _get_file_size(filepath):
+        """Get file size in human-readable format"""
+        if not filepath or not os.path.exists(filepath):
+            return None
+        
+        try:
+            size_bytes = os.path.getsize(filepath)
+            
+            # Convert to human-readable format
+            for unit in ['B', 'KB', 'MB', 'GB']:
+                if size_bytes < 1024.0:
+                    return f"{size_bytes:.1f}{unit}"
+                size_bytes /= 1024.0
+            return f"{size_bytes:.1f}TB"
+        except:
+            pass
+        
+        return None
+    
+    @staticmethod
+    def _format_file_info(filepath, resolution, file_size):
+        """Format file display with optional resolution and file size"""
         filename = os.path.basename(filepath)
-        return f"{filename} [{resolution}]" if resolution else filename
+        info_parts = []
+        
+        if resolution:
+            info_parts.append(resolution)
+        if file_size:
+            info_parts.append(file_size)
+        
+        if info_parts:
+            return f"{filename} [{', '.join(info_parts)}]"
+        return filename
     
     @staticmethod
     def _create_result(video_file=None, thumbnail_file=None, info=None):
@@ -126,14 +156,16 @@ class VideoDownloader:
             
             print(f"\n   📂 Found existing download:")
             
-            # Display video with resolution
+            # Display video with resolution and size
             video_resolution = self._get_video_resolution(video_file)
-            print(f"      Video: {self._format_file_info(video_file, video_resolution)}")
+            video_size = self._get_file_size(video_file)
+            print(f"      Video: {self._format_file_info(video_file, video_resolution, video_size)}")
             
-            # Display thumbnail with resolution
+            # Display thumbnail with resolution and size
             if thumbnail_file:
                 thumb_resolution = self._get_image_resolution(thumbnail_file)
-                print(f"      Thumbnail: {self._format_file_info(thumbnail_file, thumb_resolution)}")
+                thumb_size = self._get_file_size(thumbnail_file)
+                print(f"      Thumbnail: {self._format_file_info(thumbnail_file, thumb_resolution, thumb_size)}")
             
             # Ask user if they want to use existing
             if self.config.auto_confirm:
@@ -236,13 +268,31 @@ def upload_video(youtube_service, video_data, config, youtube_client):
             'categoryId': category_id
         },
         'status': {
-            'privacyStatus': 'private',
+            'privacyStatus': config.get_privacy_status(),
             'selfDeclaredMadeForKids': False
         }
     }
     
-    # Upload video
-    media = MediaFileUpload(video_file, chunksize=-1, resumable=True)  # type: ignore[arg-type]
+    # Get chunk size from config
+    chunk_size = config.get_chunk_size_bytes()
+    
+    # Display upload info
+    privacy_status = config.get_privacy_status()
+    privacy_emoji = {'private': '🔒', 'unlisted': '🔗', 'public': '🌐'}
+    print(f"   Privacy: {privacy_emoji.get(privacy_status, '🔒')} {privacy_status.capitalize()}")
+    
+    if chunk_size > 0:
+        chunk_mb = chunk_size / (1024 * 1024)
+        print(f"   Upload mode: Chunked ({chunk_mb:.0f}MB per chunk)")
+    else:
+        print(f"   Upload mode: Single chunk (entire file)")
+    
+    # Upload video with resumable protocol
+    media = MediaFileUpload(
+        video_file,
+        chunksize=chunk_size,
+        resumable=True
+    )  # type: ignore[arg-type]
     
     request = youtube_service.videos().insert(  # type: ignore
         part='snippet,status',
@@ -258,13 +308,19 @@ def upload_video(youtube_service, video_data, config, youtube_client):
     response = None
     print("   Uploading...", end='', flush=True)
     
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            progress = int(status.progress() * 100)
-            print(f"\r   Uploading... {progress}%", end='', flush=True)
+    try:
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                progress = int(status.progress() * 100)
+                print(f"\r   Uploading... {progress}%", end='', flush=True)
+        
+        print(f"\r✓ Video uploaded successfully! ID: {response['id']}")
     
-    print(f"\r✓ Video uploaded successfully! ID: {response['id']}")
+    except Exception as e:
+        # Handle upload errors with proper cleanup
+        print(f"\r❌ Upload failed: {str(e)}")
+        raise
     
     # Upload thumbnail if available
     if thumbnail_file and os.path.exists(thumbnail_file):

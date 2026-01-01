@@ -8,7 +8,8 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
-from config import ARCHIVE_FILE, STATE_FILE, LOG_FILE, DOWNLOAD_DIR, CONFIG_DIR, QUEUE_FILE
+from config import ARCHIVE_FILE, STATE_FILE, LOG_FILE, DOWNLOAD_DIR, CONFIG_DIR, CHANNEL_VIDEOS_FILE
+
 
 class StorageManager:
     """Manages persistent data storage"""
@@ -52,53 +53,46 @@ class StorageManager:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     
-    def load_queue(self):
-        """Load persistent video queue"""
-        if os.path.exists(QUEUE_FILE):
-            with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+    def load_channel_videos(self):
+        """Load complete channel videos cache"""
+        if os.path.exists(CHANNEL_VIDEOS_FILE):
+            with open(CHANNEL_VIDEOS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {
-            "videos": [],
+            "all_videos": [],
             "last_updated": None,
-            "source_channel_id": None
+            "source_channel_id": None,
+            "total_count": 0
         }
     
-    def save_queue(self, queue_data):
-        """Save persistent video queue"""
-        with open(QUEUE_FILE, "w", encoding="utf-8") as f:
-            json.dump(queue_data, f, indent=2)
+    def save_channel_videos(self, cache_data):
+        """Save complete channel videos cache"""
+        with open(CHANNEL_VIDEOS_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, indent=2)
     
-    def add_to_queue(self, videos, source_channel_id):
-        """Add videos to persistent queue (avoiding duplicates)"""
-        queue = self.load_queue()
-        
-        existing_ids = {v['id'] for v in queue['videos']}
-        new_videos = [v for v in videos if v['id'] not in existing_ids]
-        
-        queue['videos'].extend(new_videos)
-        queue['last_updated'] = datetime.now().isoformat()
-        queue['source_channel_id'] = source_channel_id
-        
-        self.save_queue(queue)
-        return len(new_videos)
+    def update_channel_videos_cache(self, videos, source_channel_id):
+        """Update the complete channel videos cache with ALL videos"""
+        cache = {
+            "all_videos": videos,
+            "last_updated": datetime.now().isoformat(),
+            "source_channel_id": source_channel_id,
+            "total_count": len(videos)
+        }
+        self.save_channel_videos(cache)
+        return cache
     
-    def remove_from_queue(self, video_id):
-        """Remove video from queue after successful backup"""
-        queue = self.load_queue()
-        queue['videos'] = [v for v in queue['videos'] if v['id'] != video_id]
-        self.save_queue(queue)
+    def get_cached_videos(self):
+        """Get all videos from cache"""
+        cache = self.load_channel_videos()
+        return cache.get('all_videos', [])
     
-    def get_queue_videos(self):
-        """Get videos from queue"""
-        queue = self.load_queue()
-        return queue['videos']
-    
-    def clear_queue(self):
-        """Clear the entire queue"""
-        self.save_queue({
-            "videos": [],
+    def clear_channel_videos_cache(self):
+        """Clear the entire channel videos cache"""
+        self.save_channel_videos({
+            "all_videos": [],
             "last_updated": None,
-            "source_channel_id": None
+            "source_channel_id": None,
+            "total_count": 0
         })
 
 

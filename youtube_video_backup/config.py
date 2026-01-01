@@ -22,6 +22,12 @@ INITIAL_FULL_BACKUP = True                              # Set to True to do full
 DELETE_AFTER_UPLOAD = False                             # Set to True to delete video files after successful upload
 REQUIRE_NATIVE_QUALITY = True                           # Set to True to abort if video cannot be downloaded at native quality (720p+)
                                                         # If False, will download at any available quality
+UPLOAD_CHUNK_SIZE_MB = 50                               # Upload chunk size in MB (default: 50MB)
+                                                        # Smaller chunks = more resilient to network issues
+                                                        # Larger chunks = faster upload on stable connections
+                                                        # Set to -1 to upload entire file in one chunk (not recommended for large files)
+VIDEO_PRIVACY_STATUS = "unlisted"                       # Privacy status for uploaded videos: "private", "unlisted", or "public"
+                                                        # Default: "unlisted" (video not listed but accessible via link)
 
 # =====================================
 # TECHNICAL CONFIGURATION (DO NOT EDIT)
@@ -45,7 +51,7 @@ STATE_FILE = os.path.join(CONFIG_DIR, "state.json")                 # Backup sta
 ARCHIVE_FILE = os.path.join(CONFIG_DIR, "archive.txt")              # Archive of processed videos (auto-generated)
 LOG_FILE = os.path.join(CONFIG_DIR, "log.txt")                      # Log of backed up videos (auto-generated)
 API_KEY_FILE = os.path.join(CONFIG_DIR, "api_key.txt")              # YouTube API key for public data access (not in repository)
-QUEUE_FILE = os.path.join(CONFIG_DIR, "queue.json")                 # Persistent queue of videos to backup (auto-generated)
+CHANNEL_VIDEOS_FILE = os.path.join(CONFIG_DIR, "channel_videos.json") # Complete channel video cache (auto-generated)
 DOWNLOAD_DIR = os.path.join(SCRIPT_DIR, 'downloads')                # Downloads stay in root
 
 # =====================================
@@ -65,6 +71,8 @@ class Config:
         self.initial_full_backup = INITIAL_FULL_BACKUP
         self.delete_after_upload = DELETE_AFTER_UPLOAD
         self.require_native_quality = REQUIRE_NATIVE_QUALITY
+        self.upload_chunk_size_mb = UPLOAD_CHUNK_SIZE_MB
+        self.video_privacy_status = VIDEO_PRIVACY_STATUS
     
     @classmethod
     def load(cls):
@@ -76,6 +84,23 @@ class Config:
     def should_do_full_backup(self, state):
         """Determine if full backup should be performed"""
         return self.initial_full_backup and not state.get("full_backup_completed", False)
+    
+    def get_chunk_size_bytes(self):
+        """Get upload chunk size in bytes (returns -1 for single chunk upload)"""
+        if self.upload_chunk_size_mb <= 0:
+            return -1
+        return self.upload_chunk_size_mb * 1024 * 1024
+    
+    def get_privacy_status(self):
+        """Get and validate privacy status for uploads"""
+        valid_statuses = ['private', 'unlisted', 'public']
+        status = self.video_privacy_status.lower()
+        
+        if status not in valid_statuses:
+            print(f"⚠️  Invalid privacy status '{status}', using 'unlisted' as default")
+            return 'unlisted'
+        
+        return status
 
 # =====================================
 # SETUP WIZARD
@@ -94,13 +119,16 @@ def create_default_config():
     print(f"✓ Created {CONFIG_FILE}")
     return default_config
 
+
 def check_client_secret():
     """Check if client_secret.json exists"""
     return os.path.exists(CLIENT_SECRET_FILE)
 
+
 def check_api_key():
     """Check if api_key.txt exists"""
     return os.path.exists(API_KEY_FILE)
+
 
 def prompt_for_channel_ids():
     """Prompt user for channel IDs"""
@@ -130,6 +158,7 @@ def prompt_for_channel_ids():
         print("❌ Invalid Channel ID. Please try again.\n")
     
     return source_id, backup_id
+
 
 def first_run_setup():
     """Guide user through first-run configuration"""
@@ -285,6 +314,18 @@ def first_run_setup():
         print("✓ Previous authentication found, skipping test user check\n")
     
     print("✓ Configuration complete")
+    
+    # Format chunk size display
+    chunk_display = f"{UPLOAD_CHUNK_SIZE_MB}MB" if UPLOAD_CHUNK_SIZE_MB > 0 else "Single chunk (entire file)"
+    
+    # Format privacy status display
+    privacy_display_map = {
+        'private': 'Private (only you can see)',
+        'unlisted': 'Unlisted (accessible via link)',
+        'public': 'Public (visible to everyone)'
+    }
+    privacy_display = privacy_display_map.get(VIDEO_PRIVACY_STATUS.lower(), VIDEO_PRIVACY_STATUS)
+    
     print(f"\nBackup settings:")
     print(f"  • Configuration directory: {CONFIG_DIR}")
     print(f"  • Source Channel: {config['source_channel_id']}")
@@ -296,6 +337,8 @@ def first_run_setup():
     print(f"  • Backup mode: {'Full backup (API)' if INITIAL_FULL_BACKUP else 'Incremental (RSS)'}")
     print(f"  • Delete after upload: {'YES (files will be deleted)' if DELETE_AFTER_UPLOAD else 'NO (files kept in downloads/)'}")
     print(f"  • Require native quality: {'YES (abort if < 720p)' if REQUIRE_NATIVE_QUALITY else 'NO (accept any quality)'}")
+    print(f"  • Upload chunk size: {chunk_display}")
+    print(f"  • Video privacy: {privacy_display}")
     print(f"  • Archive file: {os.path.basename(ARCHIVE_FILE)}")
     print(f"  • Log file: {os.path.basename(LOG_FILE)}")
     print(f"  • Download directory: {DOWNLOAD_DIR}")

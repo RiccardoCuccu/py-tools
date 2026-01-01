@@ -17,6 +17,7 @@ from utils import StorageManager, Logger, safe_remove_files
 VIDEOS_PER_API_PAGE = 50
 ESTIMATED_COST_PER_VIDEO = QUOTA_VIDEO_UPLOAD + QUOTA_THUMBNAIL_UPLOAD  # Upload + thumbnail
 
+
 def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quota_today, 
                          use_full_backup=False, source_videos_count=0, interruption_reason=None):
     """Print unified backup summary - handles both success and interruption cases"""
@@ -83,6 +84,7 @@ def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quot
     
     print(f"{'='*60}\n")
 
+
 def confirm_backup(video, auto_confirm=False):
     """Ask user confirmation for backing up a video"""
     if auto_confirm:
@@ -95,6 +97,7 @@ def confirm_backup(video, auto_confirm=False):
         sys.exit(0)
     
     return response == 'y'
+
 
 def main():
     """Main execution function"""
@@ -133,39 +136,40 @@ def main():
     # Determine backup mode
     use_full_backup = config.should_do_full_backup(state)
     
-    # Check if we have videos in queue from previous runs
-    queue_videos = storage.get_queue_videos()
+    # Check if we have videos in cache from previous runs
+    cached_videos = storage.get_cached_videos()
     
     # Initialize source_videos
     source_videos = []
     
-    if queue_videos:
+    if cached_videos:
+        cache_info = storage.load_channel_videos()
         print(f"\n{'='*60}")
-        print(f"📋 RESUMING FROM QUEUE")
+        print(f"📋 CACHED CHANNEL DATA FOUND")
         print(f"{'='*60}")
-        print(f"Found {len(queue_videos)} videos in queue from previous run")
-        print(f"These videos were discovered but not yet backed up.")
+        print(f"Found {len(cached_videos)} videos in cache from previous run")
+        print(f"Last updated: {cache_info.get('last_updated', 'Unknown')}")
         print(f"\nOptions:")
-        print(f"  1. Continue with queue (recommended - saves quota)")
-        print(f"  2. Re-fetch videos from channel (costs API quota)")
+        print(f"  1. Use cached data (recommended - no API cost)")
+        print(f"  2. Re-fetch videos from channel (costs API quota if using full backup)")
         
         if not config.auto_confirm:
-            response = input("\nUse queue? (1/2): ").strip()
-            use_queue = response == '1'
+            response = input("\nUse cache? (1/2): ").strip()
+            use_cache = response == '1'
         else:
-            use_queue = True
-            print("\n✓ Auto-using queue (AUTO_CONFIRM enabled)")
+            use_cache = True
+            print("\n✓ Auto-using cache (AUTO_CONFIRM enabled)")
         
-        if use_queue:
-            print(f"\n✓ Using {len(queue_videos)} videos from queue")
-            source_videos = queue_videos
-            use_full_backup = False  # Don't do full backup if using queue
+        if use_cache:
+            print(f"\n✓ Using {len(cached_videos)} videos from cache")
+            source_videos = cached_videos
+            use_full_backup = False  # Don't do full backup if using cache
         else:
-            print(f"\n⚠️  Clearing queue and re-fetching...")
-            storage.clear_queue()
-            queue_videos = []
+            print(f"\n⚠️  Clearing cache and re-fetching...")
+            storage.clear_channel_videos_cache()
+            cached_videos = []
     
-    # Only fetch new videos if we don't have any from queue
+    # Only fetch new videos if we don't have any from cache
     if not source_videos:
         # Estimate quota cost
         if use_full_backup:
@@ -204,6 +208,9 @@ def main():
             
             # Get ALL videos via API
             source_videos = youtube.get_all_channel_videos_api(config.source_channel_id)
+            
+            # Cache the complete list
+            storage.update_channel_videos_cache(source_videos, config.source_channel_id)
         else:
             print(f"\n{'='*60}")
             print(f"📹 INCREMENTAL MODE - Checking recent videos via RSS")
@@ -213,6 +220,9 @@ def main():
             
             # Get recent videos via RSS
             source_videos = youtube.get_channel_videos_rss(config.source_channel_id)
+            
+            # Cache the list
+            storage.update_channel_videos_cache(source_videos, config.source_channel_id)
     
     print(f"\n{'='*60}")
     print(f"📹 Found {len(source_videos)} total videos")
@@ -224,14 +234,27 @@ def main():
         if video['id'] not in archive:
             videos_to_backup.append(video)
     
+    # Calculate already backed up count
+    already_backed_up_count = len(source_videos) - len(videos_to_backup)
+    
+    # Show already backed up videos if any
+    if already_backed_up_count > 0:
+        print(f"{'='*60}")
+        print(f"✅ Videos already backed up: {already_backed_up_count}/{len(source_videos)}")
+        print(f"{'='*60}\n")
+        
+        # Get and sort already backed up videos
+        backed_up_videos = [v for v in source_videos if v['id'] in archive]
+        backed_up_videos.sort(key=lambda x: x['published'])
+        
+        for idx, video in enumerate(backed_up_videos, 1):
+            print(f"{idx}/{len(source_videos)}. ✓ {video['title']}")
+            print(f"   URL: {video['url']}")
+            print(f"   Published: {video['published']}\n")
+    
     if not videos_to_backup:
         print("\n✓ All videos have already been backed up!")
         print("   No action needed.")
-        
-        # Clear queue if it was used
-        if queue_videos:
-            storage.clear_queue()
-            print("   Queue cleared.")
         
         # Mark full backup as completed if in full backup mode
         if use_full_backup:
@@ -243,33 +266,31 @@ def main():
         
         return
     
-    print(f"\n{'='*60}")
-    print(f"📹 Found {len(videos_to_backup)} videos to backup")
+    print(f"{'='*60}")
+    print(f"📹 Videos to backup: {len(videos_to_backup)}/{len(source_videos)}")
     print(f"{'='*60}\n")
     
-    # Add videos to persistent queue (if not already from queue)
-    if not queue_videos:
-        added = storage.add_to_queue(videos_to_backup, config.source_channel_id)
-        print(f"✓ Added {added} new videos to persistent queue")
-        print(f"  Queue will be used if backup is interrupted\n")
+    # Note: We don't need to add to queue anymore, cache already has everything
     
     # Always sort by publish date - oldest first (chronological order)
     videos_to_backup.sort(key=lambda x: x['published'])
     print("Backing up in chronological order (oldest first)...\n")
     
-    # Display videos to backup
-    for idx, video in enumerate(videos_to_backup, 1):
-        print(f"{idx}/{len(videos_to_backup)}. {video['title']}")
+    # Display videos to backup with progressive numbering
+    start_num = already_backed_up_count + 1
+    for idx, video in enumerate(videos_to_backup, start_num):
+        print(f"{idx}/{len(source_videos)}. {video['title']}")
         print(f"   URL: {video['url']}")
         print(f"   Published: {video['published']}\n")
     
     # Process each video
     videos_backed_up = 0
     interruption_reason = None
+    last_upload_time = None  # Track when last upload finished
     
-    for idx, video in enumerate(videos_to_backup, 1):
+    for idx, video in enumerate(videos_to_backup, start_num):
         print(f"\n{'─'*60}")
-        print(f"📹 Video {idx}/{len(videos_to_backup)}: {video['title']}")
+        print(f"📹 Video {idx}/{len(source_videos)}: {video['title']}")
         print(f"{'─'*60}")
         
         # Show current quota status before asking
@@ -293,10 +314,16 @@ def main():
             continue
         
         try:
-            # Add delay between downloads
-            if videos_backed_up > 0 and config.download_delay > 0:
-                print(f"\n⏳ Waiting {config.download_delay} seconds before next download...")
-                time.sleep(config.download_delay)
+            # Apply delay BEFORE download if needed
+            if last_upload_time is not None and config.download_delay > 0:
+                elapsed = time.time() - last_upload_time
+                remaining_delay = config.download_delay - elapsed
+                
+                if remaining_delay > 0:
+                    print(f"\n⏳ Waiting {remaining_delay:.1f} more seconds before next download...")
+                    time.sleep(remaining_delay)
+                else:
+                    print(f"\n✓ Delay already satisfied ({elapsed:.1f}s elapsed since last upload)")
             
             # Download video
             video_data = downloader.download(video['url'], DOWNLOAD_DIR)
@@ -308,11 +335,11 @@ def main():
             # Upload video
             uploaded_video_id = upload_video(youtube.service, video_data, config, youtube)
             
+            # Record upload completion time
+            last_upload_time = time.time()
+            
             # Save to archive
             storage.save_to_archive(video['id'])
-            
-            # Remove from queue
-            storage.remove_from_queue(video['id'])
             
             # Log the backup
             logger.log_backed_up_video(
@@ -382,6 +409,7 @@ def main():
         source_videos_count=len(source_videos),
         interruption_reason=interruption_reason
     )
+
 
 if __name__ == '__main__':
     try:
