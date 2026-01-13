@@ -99,6 +99,33 @@ def confirm_backup(video, auto_confirm=False):
     return response == 'y'
 
 
+def ask_retry_download(auto_confirm=False):
+    """Ask user if they want to retry a failed download"""
+    if auto_confirm:
+        return False  # In auto mode, don't retry infinitely
+    
+    print(f"\n{'─'*60}")
+    print("⚠️  Download failed!")
+    print(f"{'─'*60}")
+    print("\nOptions:")
+    print("  r - Retry downloading this video")
+    print("  s - Skip this video and continue with next")
+    print("  q - Quit script")
+    
+    while True:
+        response = input("\nWhat would you like to do? (r/s/q): ").lower().strip()
+        
+        if response == 'r':
+            return True
+        elif response == 's':
+            return False
+        elif response == 'q':
+            print("\n👋 Operation interrupted by user.")
+            sys.exit(0)
+        else:
+            print("Invalid option. Please enter 'r', 's', or 'q'")
+
+
 def main():
     """Main execution function"""
     
@@ -310,82 +337,98 @@ def main():
         
         # Ask for confirmation
         if not confirm_backup(video, config.auto_confirm):
-            print("⏭️  Video skipped.")
+            print("⏭️ Video skipped.")
             continue
         
-        try:
-            # Apply delay BEFORE download if needed
-            if last_upload_time is not None and config.download_delay > 0:
-                elapsed = time.time() - last_upload_time
-                remaining_delay = config.download_delay - elapsed
+        # Retry loop for downloads
+        download_success = False
+        while not download_success:
+            try:
+                # Apply delay BEFORE download if needed
+                if last_upload_time is not None and config.download_delay > 0:
+                    elapsed = time.time() - last_upload_time
+                    remaining_delay = config.download_delay - elapsed
+                    
+                    if remaining_delay > 0:
+                        print(f"\n⏳ Waiting {remaining_delay:.1f} more seconds before next download...")
+                        time.sleep(remaining_delay)
+                    else:
+                        print(f"\n✓ Delay already satisfied ({elapsed:.1f}s elapsed since last upload)")
                 
-                if remaining_delay > 0:
-                    print(f"\n⏳ Waiting {remaining_delay:.1f} more seconds before next download...")
-                    time.sleep(remaining_delay)
-                else:
-                    print(f"\n✓ Delay already satisfied ({elapsed:.1f}s elapsed since last upload)")
-            
-            # Download video
-            video_data = downloader.download(video['url'], DOWNLOAD_DIR)
-            
-            if not video_data['success'] or not video_data['video_file']:
-                logger.log_warning("Error: video file not found after download")
-                continue
-            
-            # Upload video
-            uploaded_video_id = upload_video(youtube.service, video_data, config, youtube)
-            
-            # Record upload completion time
-            last_upload_time = time.time()
-            
-            # Save to archive
-            storage.save_to_archive(video['id'])
-            
-            # Log the backup
-            logger.log_backed_up_video(
-                video['id'],
-                video['title'],
-                video_data['info'].get('channel', 'Unknown Channel'),
-                uploaded_video_id
-            )
-            
-            # Cleanup temporary files (if enabled)
-            if config.delete_after_upload:  # type: ignore
-                print("\n🧹 Cleaning up temporary files...")
-                safe_remove_files(
-                    video_data.get('video_file'),
-                    video_data.get('thumbnail_file')
+                # Download video
+                video_data = downloader.download(video['url'], DOWNLOAD_DIR)
+                
+                if not video_data['success'] or not video_data['video_file']:
+                    logger.log_warning("Error: video file not found after download")
+                    
+                    # Ask if user wants to retry
+                    if ask_retry_download(config.auto_confirm):
+                        print("\n🔄 Retrying download...")
+                        continue
+                    else:
+                        print("⏭️ Skipping this video.")
+                        break
+                
+                # If we get here, download was successful
+                download_success = True
+                
+                # Upload video
+                uploaded_video_id = upload_video(youtube.service, video_data, config, youtube)
+                
+                # Record upload completion time
+                last_upload_time = time.time()
+                
+                # Save to archive
+                storage.save_to_archive(video['id'])
+                
+                # Log the backup
+                logger.log_backed_up_video(
+                    video['id'],
+                    video['title'],
+                    video_data['info'].get('channel', 'Unknown Channel'),
+                    uploaded_video_id
                 )
-            else:
-                print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
-                print(f"   Video: {os.path.basename(video_data['video_file'])}")
-                if video_data.get('thumbnail_file'):
-                    print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
-            
-            print(f"\n✅ Backup completed successfully!")
-            videos_backed_up += 1
-            
-            # Update state
-            state["total_videos_backed_up"] = state.get("total_videos_backed_up", 0) + 1
-            state["last_backup_date"] = datetime.now().isoformat()
-            storage.save_state(state)
-            
-        except Exception as e:
-            error_str = str(e)
-            logger.log_error(f"Error during backup: {e}")
-            
-            # Check for specific YouTube errors
-            if "uploadLimitExceeded" in error_str:
-                interruption_reason = "Upload limit exceeded"
-                break
-            
-            if not config.auto_confirm:
-                response = input("Continue with the next video? (y/n): ").lower()
-                if response != 'y':
-                    interruption_reason = "User stopped backup"
+                
+                # Cleanup temporary files (if enabled)
+                if config.delete_after_upload:  # type: ignore
+                    print("\n🧹 Cleaning up temporary files...")
+                    safe_remove_files(
+                        video_data.get('video_file'),
+                        video_data.get('thumbnail_file')
+                    )
+                else:
+                    print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
+                    print(f"   Video: {os.path.basename(video_data['video_file'])}")
+                    if video_data.get('thumbnail_file'):
+                        print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
+                
+                print(f"\n✅ Backup completed successfully!")
+                videos_backed_up += 1
+                
+                # Update state
+                state["total_videos_backed_up"] = state.get("total_videos_backed_up", 0) + 1
+                state["last_backup_date"] = datetime.now().isoformat()
+                storage.save_state(state)
+                
+            except Exception as e:
+                error_str = str(e)
+                logger.log_error(f"Error during backup: {e}")
+                
+                # Check for specific YouTube errors
+                if "uploadLimitExceeded" in error_str:
+                    interruption_reason = "Upload limit exceeded"
                     break
-            else:
-                print("Auto-continuing to next video...")
+                
+                if not config.auto_confirm:
+                    response = input("Continue with the next video? (y/n): ").lower()
+                    if response != 'y':
+                        interruption_reason = "User stopped backup"
+                        break
+                else:
+                    print("Auto-continuing to next video...")
+                
+                # Break the retry loop
+                break
     
     # Mark full backup as completed if we processed all videos
     if use_full_backup and videos_backed_up == len(videos_to_backup):
