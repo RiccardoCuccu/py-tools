@@ -24,6 +24,7 @@ INCLUDE_SHORTS = False                                  # Set to True to include
 SHORTS_MAX_DURATION_SECONDS = 120                       # Maximum duration in seconds to consider a video as a Short (default: 120)
 USE_RSS_FEEDS = True                                    # Set to True to use RSS feeds (FREE, no quota usage), False to use API
 DRY_RUN = False                                         # Set to True to simulate without actually adding videos (no quota for playlist operations)
+AUTO_DELETE_INVALID_TOKEN = True                        # Set to True to automatically delete invalid token, False to ask user for confirmation
 
 # Keyword Filtering (case-insensitive)
 ENABLE_KEYWORD_FILTER = False                           # Set to True to enable keyword filtering
@@ -403,8 +404,49 @@ def authenticate():
 
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        else:
+            try:
+                credentials.refresh(Request())
+            except Exception as refresh_error:
+                # Check if it's an invalid_grant error
+                error_message = str(refresh_error)
+                if "invalid_grant" in error_message.lower():
+                    print(f"\n⚠️ Token refresh failed: {refresh_error}")
+                    print(f"⚠️ The authentication token is corrupted or has been revoked.\n")
+                    
+                    should_delete = AUTO_DELETE_INVALID_TOKEN
+                    
+                    if not AUTO_DELETE_INVALID_TOKEN:
+                        # Ask user for confirmation
+                        print(f"The token file needs to be deleted to proceed with a fresh authentication.")
+                        print(f"Token file location: {TOKEN_FILE}\n")
+                        while True:
+                            response = input("Do you want to delete the token file and re-authenticate? (yes/no): ").strip().lower()
+                            if response in ['yes', 'y']:
+                                should_delete = True
+                                break
+                            elif response in ['no', 'n']:
+                                should_delete = False
+                                print("\n❌ Authentication cancelled. Cannot proceed without valid token.")
+                                exit(1)
+                            else:
+                                print("Please answer 'yes' or 'no'\n")
+                    
+                    if should_delete:
+                        print(f"✓ Removing corrupted token file...")
+                        try:
+                            os.remove(TOKEN_FILE)
+                            print(f"✓ Token file deleted successfully")
+                            print(f"✓ Starting fresh authentication...\n")
+                            credentials = None
+                        except Exception as delete_error:
+                            print(f"❌ Failed to delete token file: {delete_error}")
+                            raise
+                else:
+                    # Re-raise if it's a different error
+                    raise
+        
+        # If credentials is None (either fresh start or after invalid_grant), do full auth flow
+        if not credentials:
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     CLIENT_SECRET_FILE,
