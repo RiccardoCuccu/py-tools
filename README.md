@@ -8,6 +8,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 - **[bitcoin_fibonacci_log_chart](https://github.com/RiccardoCuccu/py-tools/blob/main/bitcoin_fibonacci_log_chart/)** - Visualization tool that plots Bitcoin's historical price on a logarithmic scale with Fibonacci retracement levels and halving events.
 
+- **[find_duplicates](https://github.com/RiccardoCuccu/py-tools/blob/main/find_duplicates/)** - Script to find and remove duplicate files inside a folder by comparing SHA-256 hashes.
+
 - **[google_podcasts_decoder](https://github.com/RiccardoCuccu/py-tools/blob/main/google_podcasts_decoder/)** - Script to decode Google Podcasts URLs and extract episode information from RSS feeds.
 
 - **[image_framer](https://github.com/RiccardoCuccu/py-tools/blob/main/image_framer/)** - Script to add customizable colored frames and text overlays to images with configurable padding, layered frames, and full RGB color support.
