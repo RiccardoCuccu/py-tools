@@ -14,6 +14,8 @@ Welcome to my "Python Random Tools" repository! This is a personal collection of
 
 - **[merge_python_files](https://github.com/RiccardoCuccu/py-tools/blob/main/merge_python_files/)** - Script to consolidate multiple Python files from a directory into a single executable file.
 
+- **[organize_media_by_camera](https://github.com/RiccardoCuccu/py-tools/blob/main/organize_media_by_camera/)** - Script to organize photos and videos into subfolders named after the camera model by reading EXIF and video metadata.
+
 - **[pdf_highlight_extractor](https://github.com/RiccardoCuccu/py-tools/blob/main/pdf_highlight_extractor/)** - GUI script to extract highlighted text from PDF files and save them to text files.
 
 - **[plagiarism_checker](https://github.com/RiccardoCuccu/py-tools/blob/main/plagiarism_checker/)** - Script to detect potential plagiarism in documents by searching online sources, downloading content and analyzing text similarity.
