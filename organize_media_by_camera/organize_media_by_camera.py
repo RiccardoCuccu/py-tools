@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-organize_media_by_camera.py — Organize photos and videos into subfolders by camera model.
+Organize Media by Camera - Organize photos and videos into subfolders by camera model.
 
 Reads the EXIF/metadata of each media file and moves (or simulates moving)
 files into folders named after the camera model that recorded them.
@@ -24,6 +24,10 @@ Usage:
     # Strip trailing duplicate suffixes like " (1)", " (2)", "_1", "_2" after moving
     # (only renames files where the clean name is not already taken):
     python organize_media_by_camera.py /path/to/media --strip-suffix
+
+    # Normalize extensions to lowercase or uppercase after moving:
+    python organize_media_by_camera.py /path/to/media --ext-case lower
+    python organize_media_by_camera.py /path/to/media --ext-case upper
 
 Notes:
     - If a destination subfolder already exists, files are simply added to it.
@@ -51,10 +55,6 @@ from PIL.ExifTags import TAGS
 
 pillow_heif.register_heif_opener()
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic", ".heif", ".webp", ".gif", ".dng"}
 )
@@ -67,10 +67,6 @@ SUPPORTED_EXTENSIONS: frozenset[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 FALLBACK_FOLDER = "Unknown_Device"
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)-8s %(message)s",
@@ -78,10 +74,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Progress bar
-# ---------------------------------------------------------------------------
 
 def _progress(current: int, total: int, prefix: str = "") -> None:
     """Overwrite the current line with a simple file counter."""
@@ -91,10 +83,6 @@ def _progress(current: int, total: int, prefix: str = "") -> None:
         sys.stderr.write("\n")
         sys.stderr.flush()
 
-
-# ---------------------------------------------------------------------------
-# EXIF helpers
-# ---------------------------------------------------------------------------
 
 def _exif_tag_id(name: str) -> int:
     """Return the numeric tag ID for a given EXIF tag name."""
@@ -163,8 +151,6 @@ def _model_from_video(video_path: Path) -> str:
         logger.debug("Could not read metadata from %s: %s", video_path.name, exc)
         return FALLBACK_FOLDER
 
-
-# -- Minimal QuickTime/MP4 atom parser ------------------------------------
 
 def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[name-defined]
     """
@@ -259,8 +245,6 @@ def _read_string_atom(fh: "BinaryIO", atom: tuple[int, int]) -> str:  # type: ig
     return ""
 
 
-# -- Label helpers ---------------------------------------------------------
-
 def _build_label(make: str, model: str) -> str:
     """Combine make and model into a clean folder name."""
     make = make.strip()
@@ -290,13 +274,9 @@ def _sanitize_folder_name(name: str) -> str:
     return result.strip("_").replace(" ", "_")
 
 
-# ---------------------------------------------------------------------------
-# File collection
-# ---------------------------------------------------------------------------
-
 def collect_media(source: Path, recursive: bool) -> list[Path]:
     """Return all supported media files (images and videos) found in the source folder."""
-    sys.stderr.write("  Scanning files …\n")
+    sys.stderr.write("  Scanning files ...\n")
     sys.stderr.flush()
     pattern = "**/*" if recursive else "*"
     return [
@@ -305,10 +285,6 @@ def collect_media(source: Path, recursive: bool) -> list[Path]:
         if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
 
-
-# ---------------------------------------------------------------------------
-# Core logic
-# ---------------------------------------------------------------------------
 
 def build_plan(
     photos: list[Path],
@@ -324,7 +300,7 @@ def build_plan(
     total = len(photos)
 
     for idx, photo in enumerate(photos, start=1):
-        logger.debug("[%d/%d] Inspecting %s …", idx, total, photo.name)
+        logger.debug("[%d/%d] Inspecting %s ...", idx, total, photo.name)
         folder_name = get_camera_model(photo)
         plan[folder_name].append(photo)
         _progress(idx, total, prefix="Reading metadata  ")
@@ -334,13 +310,11 @@ def build_plan(
 
 DUPLICATES_SUBFOLDER = "duplicates"
 
-# ---------------------------------------------------------------------------
-# Duplicate-suffix helpers  (used both in execute_plan and strip_duplicate_suffix)
-# ---------------------------------------------------------------------------
+# Duplicate-suffix helpers (used both in execute_plan and strip_duplicate_suffix)
 
 # Trailing Windows-style duplicate label: " (1)", "(2)", etc.
 _PAREN_SUFFIX_PATTERN = _re.compile(r"\s*\(\d+\)$")
-# Trailing _unique_path-style single-digit counter: "_1" … "_9".
+# Trailing _unique_path-style single-digit counter: "_1" ... "_9".
 _NUMERIC_SUFFIX_PATTERN = _re.compile(r"_[1-9]$")
 
 
@@ -363,6 +337,7 @@ def execute_plan(
     *,
     copy: bool,
     dry_run: bool,
+    ext_case: str | None = None,
 ) -> tuple[int, int, int]:
     """
     Execute (or simulate) the move/copy of files according to the plan.
@@ -370,6 +345,9 @@ def execute_plan(
     Filename collisions are resolved by routing the incoming file to a
     'duplicates/' subfolder under the same camera folder rather than
     overwriting or renaming the existing file.
+
+    If ext_case is 'lower' or 'upper', the file extension is renamed to the
+    requested case immediately after each successful move/copy.
 
     Returns:
         A tuple (files_ok, files_skipped, files_duplicated).
@@ -397,6 +375,15 @@ def execute_plan(
             dest_file = target_dir / src.name
             is_duplicate = False
 
+            # Skip files already inside their target directory so that re-running
+            # the script with --recursive on an already-organised folder is
+            # idempotent and does not route those files to duplicates/.
+            if src.is_relative_to(target_dir):
+                processed += 1
+                _progress(processed, total, prefix=f"Files {'dry-run' if dry_run else ('copying' if copy else 'moving')}")
+                files_ok += 1
+                continue
+
             if not dry_run:
                 # Exact collision: same filename already in target folder
                 if dest_file.exists():
@@ -422,17 +409,33 @@ def execute_plan(
             _progress(processed, total, prefix=f"Files {action_label}")
 
             if dry_run:
-                logger.debug("[DRY-RUN] %s  →  %s", src.name, target_dir)
+                display_name = src.name
+                if ext_case:
+                    new_suffix = src.suffix.lower() if ext_case == "lower" else src.suffix.upper()
+                    if new_suffix != src.suffix:
+                        display_name = src.stem + new_suffix
+                logger.debug("[DRY-RUN] %s  →  %s", display_name, target_dir)
             else:
                 try:
                     action(str(src), str(dest_file))
+                    if ext_case:
+                        new_suffix = dest_file.suffix.lower() if ext_case == "lower" else dest_file.suffix.upper()
+                        if new_suffix != dest_file.suffix:
+                            new_dest = dest_file.with_suffix(new_suffix)
+                            # On Windows, exists() returns True for case-only name differences
+                            # because the filesystem is case-insensitive. Allow the rename when
+                            # new_dest is merely a case variant of dest_file (not a real collision).
+                            is_case_rename = new_dest.name.lower() == dest_file.name.lower()
+                            if not new_dest.exists() or is_case_rename:
+                                dest_file.rename(new_dest)
+                                dest_file = new_dest
                     if is_duplicate:
                         logger.debug(
-                            "%s  →  %s (duplicate)", src.name, dest_file.parent
+                            "%s  →  %s (duplicate)", dest_file.name, dest_file.parent
                         )
                         files_duplicated += 1
                     else:
-                        logger.debug("%s  →  %s", src.name, target_dir)
+                        logger.debug("%s  →  %s", dest_file.name, target_dir)
                     files_ok += 1
                 except Exception as exc:
                     logger.error("Failed to process %s: %s", src.name, exc)
@@ -445,7 +448,7 @@ def execute_plan(
 
 
 def _unique_path(path: Path) -> Path:
-    """Append _1, _2, … to the filename until a non-existing path is found."""
+    """Append _1, _2, ... to the filename until a non-existing path is found."""
     stem, suffix = path.stem, path.suffix
     counter = 1
     candidate = path
@@ -453,11 +456,6 @@ def _unique_path(path: Path) -> Path:
         candidate = path.parent / f"{stem}_{counter}{suffix}"
         counter += 1
     return candidate
-
-
-# ---------------------------------------------------------------------------
-# Suffix stripping
-# ---------------------------------------------------------------------------
 
 
 def strip_duplicate_suffix(folder: Path, *, dry_run: bool) -> tuple[int, int]:
@@ -475,7 +473,7 @@ def strip_duplicate_suffix(folder: Path, *, dry_run: bool) -> tuple[int, int]:
             continue
         cleaned = _clean_stem(file.stem)
         if cleaned is None:
-            # No trailing duplicate suffix — nothing to do
+            # No trailing duplicate suffix - nothing to do
             continue
         candidates.append((file, file.with_stem(cleaned)))
 
@@ -504,10 +502,6 @@ def strip_duplicate_suffix(folder: Path, *, dry_run: bool) -> tuple[int, int]:
     return renamed, skipped
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-
 def print_summary(
     plan: dict[str, list[Path]],
     destination: Path,
@@ -517,7 +511,7 @@ def print_summary(
     """Print a human-readable summary of the organisation plan."""
     total_files = sum(len(v) for v in plan.values())
     header = "═" * 60
-    mode_label = "DRY RUN — no filesystem changes" if dry_run else "LIVE RUN"
+    mode_label = "DRY RUN - no filesystem changes" if dry_run else "LIVE RUN"
 
     print(f"\n{header}")
     print(f"  Mode        : {mode_label}")
@@ -533,10 +527,6 @@ def print_summary(
 
     print(f"\n{header}\n")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -589,8 +579,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "After moving files, remove trailing duplicate suffixes like ' (1)', ' (2)' "
-            "or '_1' … '_9' from filenames inside each subfolder, "
+            "or '_1' ... '_9' from filenames inside each subfolder, "
             "but only when no conflict exists."
+        ),
+    )
+    parser.add_argument(
+        "--ext-case",
+        choices=["lower", "upper"],
+        default=None,
+        help=(
+            "Normalize file extensions to all-lowercase ('lower') or all-uppercase ('upper') "
+            "after moving or copying each file (e.g. '.JPG' -> '.jpg' with 'lower')."
         ),
     )
     return parser.parse_args()
@@ -610,14 +609,14 @@ def main() -> int:
     destination: Path = (args.destination or source).resolve()
 
     # Collect all supported media files
-    logger.info("Scanning %s …", source)
+    logger.info("Scanning %s ...", source)
     photos = collect_media(source, recursive=args.recursive)
 
     if not photos:
         logger.warning("No media files found in %s", source)
         return 0
 
-    logger.info("Found %d media files. Reading metadata …", len(photos))
+    logger.info("Found %d media files. Reading metadata ...", len(photos))
 
     # Build the organisation plan
     plan = build_plan(photos, destination)
@@ -630,11 +629,14 @@ def main() -> int:
     if args.dry_run:
         logger.info("Dry run complete. No files were modified.")
         if args.strip_suffix:
-            logger.info("Dry run — suffix stripping preview …")
+            logger.info("Dry run - suffix stripping preview ...")
             for folder_name in plan:
                 subfolder = destination / folder_name
                 if subfolder.is_dir():
                     strip_duplicate_suffix(subfolder, dry_run=True)
+                dup_folder = subfolder / DUPLICATES_SUBFOLDER
+                if dup_folder.is_dir():
+                    strip_duplicate_suffix(dup_folder, dry_run=True)
         return 0
 
     # Execute the plan
@@ -643,6 +645,7 @@ def main() -> int:
         destination,
         copy=args.copy,
         dry_run=False,
+        ext_case=args.ext_case,
     )
 
     action_label = "copied" if args.copy else "moved"
@@ -656,7 +659,7 @@ def main() -> int:
 
     # Optional: strip trailing duplicate suffixes (e.g. " (1)") from renamed files
     if args.strip_suffix:
-        logger.info("Stripping duplicate suffixes in subfolders …")
+        logger.info("Stripping duplicate suffixes in subfolders ...")
         total_renamed = 0
         total_conflicts = 0
         for folder_name in plan:
@@ -664,6 +667,11 @@ def main() -> int:
             r, s = strip_duplicate_suffix(subfolder, dry_run=False)
             total_renamed += r
             total_conflicts += s
+            dup_folder = subfolder / DUPLICATES_SUBFOLDER
+            if dup_folder.is_dir():
+                r, s = strip_duplicate_suffix(dup_folder, dry_run=False)
+                total_renamed += r
+                total_conflicts += s
         logger.info(
             "Suffix stripping done: %d file(s) renamed, %d skipped due to conflicts.",
             total_renamed,

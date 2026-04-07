@@ -33,7 +33,8 @@ python organize_media_by_camera.py C:\Users\Me\Pictures --destination D:\Sorted
 - `--copy` / `-c` — Copy files instead of moving them
 - `--recursive` / `-r` — Also search for media in subfolders
 - `--destination PATH` / `-d` — Output folder (default: same as source)
-- `--strip-suffix` / `-s` — After organising, remove trailing duplicate suffixes like ` (1)`, `_1`…`_9` from filenames, only when no conflict exists
+- `--strip-suffix` / `-s` — After organising, remove trailing duplicate suffixes like ` (1)`, `_1`...`_9` from filenames, only when no conflict exists
+- `--ext-case {lower,upper}` — Normalize file extensions to all-lowercase or all-uppercase after each move/copy (e.g. `.JPG` becomes `.jpg` with `lower`)
 - `--verbose` / `-v` — Show every processed file
 
 ## Installation
