@@ -1,37 +1,42 @@
+#!/usr/bin/env python3
+"""
+Merge Python Files - Merge all Python files in a folder into a single output file.
+
+main.py (if present) is always placed last in the merged output.
+
+Usage:
+    python merge_python_files.py
+"""
+
 import os
+
 
 def merge_python_files(input_folder, output_file):
     """
-    Merge all Python files in the specified folder into a single executable file.
-    The main.py file, if present, will be placed at the end.
-    
-    :param input_folder: Folder containing the .py files
-    :param output_file: Output file where the merged content will be written
+    Merge all .py files in input_folder into a single output_file.
+
+    main.py is appended last so other modules are defined before the entry point.
     """
     py_files = []
     main_file = None
-    
-    # Scan the folder to gather all .py files
+
     for file_name in os.listdir(input_folder):
         file_path = os.path.join(input_folder, file_name)
-        if os.path.isfile(file_path) and file_name.endswith('.py'):
-            if file_name == 'main.py':
-                main_file = file_path  # Store the main.py file
+        if os.path.isfile(file_path) and file_name.endswith(".py"):
+            if file_name == "main.py":
+                main_file = file_path
             else:
                 py_files.append(file_path)
-    
-    # Write the contents of all files to the output file
-    with open(output_file, 'w') as outfile:
-        # Add non-main.py files
+
+    with open(output_file, "w", encoding="utf-8") as outfile:
         for file_path in py_files:
-            with open(file_path, 'r') as infile:
+            with open(file_path, "r", encoding="utf-8") as infile:
                 outfile.write(f"# File: {os.path.basename(file_path)}\n")
                 outfile.write(infile.read())
                 outfile.write("\n\n")
-        
-        # Add main.py at the end if it exists
+
         if main_file:
-            with open(main_file, 'r') as infile:
+            with open(main_file, "r", encoding="utf-8") as infile:
                 outfile.write(f"# File: {os.path.basename(main_file)}\n")
                 outfile.write(infile.read())
                 outfile.write("\n")
@@ -39,9 +44,7 @@ def merge_python_files(input_folder, output_file):
     print(f"Merging completed. File created: {output_file}")
 
 
-# Ask for the folder path and the output file name
-input_folder = input("Enter the path to the folder containing Python files: ")
-output_file = input("Enter the name of the output file (e.g., merged.py): ")
-
-# Merge the files
-merge_python_files(input_folder, output_file)
+if __name__ == "__main__":
+    input_folder = input("Enter the path to the folder containing Python files: ")
+    output_file = input("Enter the name of the output file (e.g., merged.py): ")
+    merge_python_files(input_folder, output_file)
