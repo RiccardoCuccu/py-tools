@@ -21,7 +21,7 @@ Log in to Steam when the browser window opens.
 ## Installation
 
 To use `steam_cloud_downloader.py`, you need to install the following Python libraries:
-```bash
+```
 pip install selenium requests beautifulsoup4
 ```
 
