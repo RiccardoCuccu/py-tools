@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
 """Browser Fetcher - Playwright-based browser automation for JavaScript-rendered Amazon pages"""
 
 import asyncio
 import logging
 from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeout
+
 import config
 from utils import extract_asin, parse_price_text, parse_price_from_parts, BaseFetcher
 
@@ -63,7 +65,7 @@ class BrowserFetcher(BaseFetcher):
                     '--no-sandbox',
                 ]
             )
-            
+            assert self._browser is not None
             self._context = await self._browser.new_context(
                 viewport={
                     'width': config.BROWSER_VIEWPORT_WIDTH,
@@ -233,6 +235,7 @@ class BrowserFetcher(BaseFetcher):
         
         try:
             page = await self._context.new_page()
+            assert page is not None
             await page.goto(url, wait_until='domcontentloaded', timeout=config.BROWSER_PAGE_TIMEOUT)
             
             try:

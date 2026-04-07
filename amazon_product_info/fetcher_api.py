@@ -1,11 +1,8 @@
+#!/usr/bin/env python3
 """PA-API Fetcher - Amazon Product Advertising API 5.0 fetcher with all related functions"""
 
 import logging
 from typing import Optional, Dict, Any
-import config
-from utils import extract_asin, parse_price_flexible, BaseFetcher
-
-logger = logging.getLogger(__name__)
 
 try:
     from amazon_paapi import AmazonApi
@@ -15,12 +12,17 @@ except ImportError:
     AmazonApi = None
     Country = None
     PAAPI_AVAILABLE = False
+
+import config
+from utils import extract_asin, parse_price_flexible, BaseFetcher
+
+logger = logging.getLogger(__name__)
+
+if not PAAPI_AVAILABLE:
     logger.warning("[PA-API] SDK not installed - install with: pip install python-amazon-paapi")
 
 
-# ============================================================================
-# PA-API FETCHER CLASS
-# ============================================================================
+# PA-API fetcher class
 
 class APIFetcher(BaseFetcher):
     """Fetches product data using Amazon Product Advertising API"""

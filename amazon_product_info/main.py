@@ -1,5 +1,15 @@
-"""Amazon Product Info - standalone program to extract prices and product info from Amazon URLs"""
+#!/usr/bin/env python3
+"""
+Amazon Product Price Scraper - Extract prices, names, and images from Amazon product URLs.
 
+Tries up to three fetching methods in order (PA-API, HTML scraper, browser automation)
+and writes results to an output file. Fetcher order and credentials are set in config.py.
+
+Usage:
+    python main.py input.txt output.txt
+"""
+
+import argparse
 import asyncio
 import logging
 import sys
@@ -43,10 +53,6 @@ logging.basicConfig(
     ]
 )
 
-
-# ============================================================================
-# MAIN SCRAPER CLASS
-# ============================================================================
 
 class AmazonScraper:
     """Main scraper class that orchestrates URL processing"""
@@ -417,18 +423,15 @@ class AmazonScraper:
         await HTTPSessionManager.close()
 
 
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
-
 async def main():
     """Main entry point"""
-    if len(sys.argv) < 3:
-        print("Usage: python main.py input.txt output.txt")
-        sys.exit(1)
-    
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    parser = argparse.ArgumentParser(description="Extract prices and product info from Amazon URLs")
+    parser.add_argument("input_file", help="Path to input file containing Amazon URLs")
+    parser.add_argument("output_file", help="Path to output file for results")
+    args = parser.parse_args()
+
+    input_file = args.input_file
+    output_file = args.output_file
     
     print("\n" + "="*100)
     print("AMAZON PRODUCT PRICE SCRAPER")

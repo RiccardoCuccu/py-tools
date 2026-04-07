@@ -1,23 +1,23 @@
+#!/usr/bin/env python3
 """Shared utilities - all helper functions, data models, and common utilities for the scraper"""
 
 import asyncio
 import logging
 import re
-import requests
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-import sys
+
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 import config
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# DATA MODELS
-# ============================================================================
+# Data models
 
 @dataclass
 class ProductResult:
@@ -70,10 +70,6 @@ class ScraperStats:
         self.fetchers[key] = FetcherStats(name=name)
 
 
-# ============================================================================
-# ABSTRACT BASE CLASS
-# ============================================================================
-
 class BaseFetcher(ABC):
     """Abstract base class defining the interface for all product data fetchers"""
 
@@ -106,9 +102,7 @@ class BaseFetcher(ABC):
         pass
 
 
-# ============================================================================
-# PRICE PARSING UTILITIES
-# ============================================================================
+# Price parsing utilities
 
 def parse_price_text(text: str) -> Optional[float]:
     """Parse price from text like '44,95€' or '$19.99' and validate range"""
@@ -158,9 +152,7 @@ def parse_price_flexible(text: Optional[str] = None, whole: Optional[str] = None
     return None
 
 
-# ============================================================================
-# URL PROCESSING UTILITIES
-# ============================================================================
+# URL processing utilities
 
 def extract_asin(url: str) -> Optional[str]:
     """Extract 10-character ASIN from Amazon product URL using multiple patterns"""
@@ -253,9 +245,7 @@ def process_amazon_url(url: str) -> Optional[str]:
     return f"https://{domain}/dp/{asin}"
 
 
-# ============================================================================
-# SHARED HELPER FUNCTIONS
-# ============================================================================
+# Shared helper functions
 
 async def safe_close(resource: Any, resource_name: str):
     """Safely close async resource with error logging"""

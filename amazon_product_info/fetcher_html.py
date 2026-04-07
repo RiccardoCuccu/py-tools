@@ -1,21 +1,22 @@
+#!/usr/bin/env python3
 """HTML Fetcher - BeautifulSoup-based scraper with HTTP session management and all related functions"""
 
 import asyncio
 import logging
 import random
 import re
-import aiohttp
-from bs4 import BeautifulSoup
 from typing import Optional, Dict, Any
+
+import aiohttp
+from bs4 import BeautifulSoup, Tag
+
 import config
 from utils import extract_asin, parse_price_text, parse_price_from_parts, BaseFetcher
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# HTTP SESSION MANAGER
-# ============================================================================
+# HTTP session manager
 
 class HTTPSessionManager:
     """Singleton HTTP session manager for efficient connection pooling"""
@@ -50,9 +51,7 @@ class HTTPSessionManager:
             logger.debug("[HTTP] Shared session closed")
 
 
-# ============================================================================
-# HTML FETCHER CLASS
-# ============================================================================
+# HTML fetcher class
 
 class HTMLFetcher(BaseFetcher):
     """Fetches product data using HTML scraping with BeautifulSoup"""
@@ -98,45 +97,45 @@ class HTMLFetcher(BaseFetcher):
     def _extract_price(self, soup: BeautifulSoup, expected_asin: Optional[str]) -> Optional[float]:
         """Extract price from Amazon's corePrice container with ASIN verification"""
         core_price_div = soup.find("div", id="corePrice_feature_div")
-        
-        if not core_price_div:
+
+        if not isinstance(core_price_div, Tag):
             logger.debug("[HTML] corePrice_feature_div not found")
             return None
-        
+
         if expected_asin:
             actual_asin = core_price_div.get("data-csa-c-asin")
             if actual_asin and actual_asin != expected_asin:
                 logger.warning(f"[HTML] ASIN mismatch - expected: {expected_asin}, found: {actual_asin}")
                 return None
-        
+
         price_container = core_price_div.find("span", class_="a-price")
-        if not price_container:
+        if not isinstance(price_container, Tag):
             logger.debug("[HTML] Price container not found")
             return None
-        
+
         offscreen = price_container.find("span", class_="a-offscreen")
-        if offscreen:
+        if isinstance(offscreen, Tag):
             price = parse_price_text(offscreen.get_text())
             if price:
                 return price
-        
+
         whole_elem = price_container.find("span", class_="a-price-whole")
         fraction_elem = price_container.find("span", class_="a-price-fraction")
-        
-        if whole_elem and fraction_elem:
+
+        if isinstance(whole_elem, Tag) and isinstance(fraction_elem, Tag):
             whole_text = ''.join(whole_elem.find_all(string=True, recursive=False))
             fraction_text = fraction_elem.get_text()
             return parse_price_from_parts(whole_text, fraction_text)
-        
+
         return None
-    
+
     def _extract_product_name(self, soup: BeautifulSoup) -> Optional[str]:
         """Extract product name from HTML title element"""
         title = soup.find("span", {"id": "productTitle"})
-        if title:
+        if isinstance(title, Tag):
             return title.get_text().strip()
         return None
-    
+
     def _extract_product_image(self, soup: BeautifulSoup) -> Optional[str]:
         """Extract product image URL from HTML"""
         image_selectors = [
@@ -144,14 +143,14 @@ class HTMLFetcher(BaseFetcher):
             ("img", {"id": "imgBlkFront"}),
             ("img", {"data-old-hires": True}),
         ]
-        
+
         for tag, attrs in image_selectors:
             element = soup.find(tag, attrs)
-            if element:
+            if isinstance(element, Tag):
                 img_url = element.get("data-old-hires") or element.get("src")
-                if img_url and img_url.startswith("http"):
-                    return img_url
-        
+                if img_url and str(img_url).startswith("http"):
+                    return str(img_url)
+
         return None
     
     async def fetch(self, url: str) -> Optional[Dict[str, Any]]:

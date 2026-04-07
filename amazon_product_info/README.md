@@ -1,6 +1,6 @@
 # Amazon Product Price Scraper
 
-**Purpose:** `amazon_product_info` is a tool that extracts prices, names, and images from Amazon product URLs. It uses three independent fetching methods (PA-API, HTML scraping, browser automation) that can be enabled, disabled, and ordered according to your needs. All settings are centralized in a single configuration file.
+**Purpose:** `amazon_product_info` is a tool that extracts prices, names, and images from Amazon product URLs. It uses three independent fetching methods (PA-API, HTML scraping, browser automation) that can be enabled, disabled, and ordered according to your needs.
 
 ## How it Works
 
@@ -17,36 +17,16 @@
 
 ## Usage
 
-```bash
+```
 python main.py input.txt output.txt
 ```
 
-**Input file format:**
-```
-# This line is ignored
-https://www.amazon.it/Logbook-PRO-Bodybuilding-Powerbuilding-Streetlifting/dp/B0CWX8H8WD/
-https://www.amazon.it/gp/aw/d/B0FP2TZ49R/
-https://www.amazon.de/dp/B0B31K85HC?th=1&psc=1
-https://www.amazon.ie/gp/product/B0BW777FW2
-https://amzn.eu/d/a2AbBH4
-https://amzn.to/3Y03PIX
-```
-
-**config.json file format:**
-```json
-{
-  "access_key": "YOUR_AMAZON_ACCESS_KEY_HERE",
-  "secret_key": "YOUR_AMAZON_SECRET_KEY_HERE"
-}
-```
-
-Get credentials at: https://affiliate-program.amazon.com/assoc_credentials/home
+The input file contains one Amazon URL per line. Lines starting with `#` are ignored. PA-API credentials for the optional API fetcher must be placed in a `config.json` file next to `main.py` with `access_key` and `secret_key` fields. Get credentials at: https://affiliate-program.amazon.com/assoc_credentials/home
 
 ## Installation
 
-To use `amazon_product_info`, you need to install the following Python libraries:
-
-```bash
-pip install aiohttp beautifulsoup4 lxml requests tqdm python-amazon-paapi playwright
-playwright install chromium
 ```
+pip install aiohttp beautifulsoup4 lxml requests python-amazon-paapi playwright
+```
+
+After installing, run `playwright install chromium` to download the browser binary used by the browser fetcher.

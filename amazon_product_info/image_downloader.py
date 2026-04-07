@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Image Downloader - downloads and saves product images with ASIN-based naming using shared HTTP session"""
 
 import asyncio
