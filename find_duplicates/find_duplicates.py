@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-find_duplicates.py - Find and remove duplicate files inside a folder.
+Find Duplicates - Find and remove duplicate files inside a folder.
 
 Two files are considered duplicates when their SHA-256 hash is identical,
 meaning they are byte-for-byte the same regardless of their filename.
@@ -59,7 +59,7 @@ def _progress(current: int, total: int) -> None:
 
 def collect_files(source: Path, recursive: bool) -> list[Path]:
     """Return all files found in the source folder."""
-    sys.stderr.write("  Scanning files …\n")
+    sys.stderr.write("  Scanning files ...\n")
     sys.stderr.flush()
     pattern = "**/*" if recursive else "*"
     return [p for p in source.glob(pattern) if p.is_file()]
@@ -169,12 +169,12 @@ def process_duplicates(
         keeper, duplicates = resolve_duplicate_group(paths)
 
         print(f"\n{'─' * 60}")
-        print(f"  Duplicate group {group_idx}/{total_groups}  (SHA-256: {digest[:16]}…)")
-        print(f"\n  ✅  KEEP (oldest):")
+        print(f"  Duplicate group {group_idx}/{total_groups}  (SHA-256: {digest[:16]}...)")
+        print(f"\n  KEEP (oldest):")
         print(_format_info(keeper))
 
         for dup in duplicates:
-            print(f"\n  🗑️   DUPLICATE:")
+            print(f"\n  DUPLICATE:")
             print(_format_info(dup))
 
             if dry_run:
@@ -205,7 +205,7 @@ def process_duplicates(
 def print_summary(hash_map: dict[str, list[Path]], total_files: int) -> None:
     """Print a summary of what was found before processing."""
     duplicate_files = sum(len(v) - 1 for v in hash_map.values())
-    header = "═" * 60
+    header = "=" * 60
 
     print(f"\n{header}")
     print(f"  Files scanned    : {total_files}")
@@ -215,6 +215,7 @@ def print_summary(hash_map: dict[str, list[Path]], total_files: int) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Find and remove duplicate files inside a folder.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -253,6 +254,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Entry point: parse arguments, find duplicates, and process them."""
     args = parse_args()
 
     if args.verbose:
@@ -263,22 +265,19 @@ def main() -> int:
         logger.error("Source folder does not exist: %s", source)
         return 1
 
-    # Collect files
     files = collect_files(source, recursive=args.recursive)
     if not files:
         logger.warning("No files found in %s", source)
         return 0
 
-    logger.info("Found %d files. Computing hashes …", len(files))
+    logger.info("Found %d files. Computing hashes ...", len(files))
 
-    # Build hash map
     hash_map = build_hash_map(files)
 
     if not hash_map:
         logger.info("No duplicates found.")
         return 0
 
-    # Show summary
     print_summary(hash_map, len(files))
 
     if args.dry_run:
@@ -286,7 +285,6 @@ def main() -> int:
         logger.info("Dry run complete. No files were deleted.")
         return 0
 
-    # Warn before destructive operation
     if not args.yes:
         total_to_delete = sum(len(v) - 1 for v in hash_map.values())
         confirmed = _ask(
@@ -296,12 +294,11 @@ def main() -> int:
             logger.info("Aborted.")
             return 0
 
-    # Process
     deleted, skipped = process_duplicates(
         hash_map, dry_run=False, auto_yes=args.yes
     )
 
-    print(f"\n{'═' * 60}")
+    print(f"\n{'=' * 60}")
     logger.info("Done: %d deleted, %d skipped.", deleted, skipped)
 
     return 0
