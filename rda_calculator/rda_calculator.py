@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-rda_calculator.py - GUI tool to convert milligrams of vitamins and minerals into RDA percentages.
+RDA Calculator - GUI tool to convert milligrams of vitamins and minerals into RDA percentages.
+
+Enter the amount in milligrams for each nutrient and click Calculate (or press Enter)
+to see the corresponding EU RDA percentage.
+
+Usage:
+    python rda_calculator.py
 """
 
 from tkinter import E, N, S, W, StringVar, Tk, Widget
