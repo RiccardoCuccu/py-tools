@@ -1,45 +1,64 @@
+#!/usr/bin/env python3
+"""
+Webpage Carbon Dating - Attempt to find the original publication date of a webpage from its metadata.
+
+Checks common meta tags (article:published_time, og:published_time, DC.date.issued, etc.)
+and the <time> element for a date value.
+
+Usage:
+    python webpage_carbon_dating.py
+"""
+
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
+
+# HTTP status codes
+HTTP_OK = 200
+
+# Meta tag attributes to search for publication date information
+POSSIBLE_DATE_TAGS = [
+    {"property": "article:published_time"},
+    {"name": "date"},
+    {"name": "pubdate"},
+    {"name": "article:published_time"},
+    {"name": "DC.date.issued"},
+    {"itemprop": "datePublished"},
+    {"property": "og:published_time"},
+]
+
 
 def get_publication_date_from_html(url):
-    # Perform the HTTP request to get the content of the page
+    """
+    Fetch url and search its metadata for a publication date.
+
+    Returns a human-readable string with the date if found, or a message
+    indicating that no date was present in the page metadata.
+    """
     response = requests.get(url)
-    
-    if response.status_code != 200:
+
+    if response.status_code != HTTP_OK:
         return f"Error loading the page: {response.status_code}"
-    
-    # Parse the HTML content of the page
-    soup = BeautifulSoup(response.content, 'html.parser')
-    
-    # Possible tags that might contain the publication date
-    possible_date_tags = [
-        {'property': 'article:published_time'},
-        {'name': 'date'},
-        {'name': 'pubdate'},
-        {'name': 'article:published_time'},
-        {'name': 'DC.date.issued'},
-        {'itemprop': 'datePublished'},
-        {'property': 'og:published_time'},
-    ]
-    
-    # Search for the date in the meta tags
-    for tag in possible_date_tags:
-        meta_tag = soup.find('meta', tag)
-        if meta_tag and meta_tag.get('content'):
-            # Split the date to remove the time if it exists
-            publication_date = meta_tag['content'].split("T")[0]
+
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    for tag in POSSIBLE_DATE_TAGS:
+        meta_tag = soup.find("meta", attrs=tag)  # type: ignore[arg-type]
+        if isinstance(meta_tag, Tag):
+            content = meta_tag.get("content")
+            if content:
+                publication_date = str(content).split("T")[0]
+                return f"Publication date found: {publication_date}"
+
+    time_tag = soup.find("time")
+    if isinstance(time_tag, Tag):
+        datetime_val = time_tag.get("datetime")
+        if datetime_val:
+            publication_date = str(datetime_val).split("T")[0]
             return f"Publication date found: {publication_date}"
-    
-    # Also search the <time> tag if it exists
-    time_tag = soup.find('time')
-    if time_tag and time_tag.get('datetime'):
-        # Split the date to remove the time if it exists
-        publication_date = time_tag['datetime'].split("T")[0]
-        return f"Publication date found: {publication_date}"
-    
+
     return "Publication date not found in the metadata."
 
-# Example of usage
-url = input("Enter the URL of the site: ")
-date = get_publication_date_from_html(url)
-print(date)
+
+if __name__ == "__main__":
+    url = input("Enter the URL of the site: ")
+    print(get_publication_date_from_html(url))
