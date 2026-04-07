@@ -1,9 +1,23 @@
+#!/usr/bin/env python3
+"""
+Image Framer - Add colored frames and optional text labels to images using a YAML config file.
+
+Reads frame thickness, colors, target size, and label text from a YAML config.
+Outputs a new image with outer and inner frames plus optional side labels.
+
+Usage:
+    python image_framer.py
+    python image_framer.py --config my_config.yaml
+    python image_framer.py --input photo.jpg --output framed.jpg
+"""
+
 import argparse
-import yaml
-from PIL import Image, ImageDraw, ImageFont
-from typing import Tuple, Dict, Any
 import os
 from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import yaml
+from PIL import Image, ImageDraw, ImageFont
 
 
 def get_default_config() -> Dict[str, Any]:
@@ -111,7 +125,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
     
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
+            raw = yaml.safe_load(f)
+            config: Dict[str, Any] = raw if isinstance(raw, dict) else {}
     except yaml.YAMLError as e:
         print(f"ERROR: Failed to parse YAML file: {e}")
         exit(1)
@@ -133,7 +148,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def get_default_font(font_size: int) -> ImageFont.FreeTypeFont:
+def get_default_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """
     Get a default TrueType font from the system.
     Tries common system fonts in order of availability.
@@ -196,7 +211,7 @@ def process_image(
     scale = target_inner_size / longest_side
     new_w = int(orig_w * scale)
     new_h = int(orig_h * scale)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
+    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     # --- Step 2: Pad to square with configurable color bars ---
     square_size = target_inner_size
@@ -280,6 +295,7 @@ def process_image(
 
 
 def main():
+    """Parse arguments, load YAML config, and process the image."""
     parser = argparse.ArgumentParser(
         description='Add colored frames and text to images'
     )
