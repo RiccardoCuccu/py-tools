@@ -1,11 +1,18 @@
+#!/usr/bin/env python3
 """
-Plagiarism Checker - Main Entry Point
+Plagiarism Checker - Check a document for plagiarism by searching its phrases online.
 
-This is the main script that orchestrates the 5-step plagiarism detection workflow.
+Extracts text from a .docx, .pdf, or .txt file, selects representative phrases,
+searches them via DuckDuckGo or SerpAPI, and scores similarity against found sources.
+
+Usage:
+    python main.py document.pdf
+    python main.py essay.docx --max-sources 10 --use-apis
 """
 
-import sys
+import argparse
 import os
+import sys
 from pathlib import Path
 
 from extractors import TextExtractor
@@ -15,9 +22,7 @@ from downloader import ContentDownloader
 from analyzer import SimilarityAnalyzer
 
 
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
+# Utility functions
 
 def confirm_continue(message="Do you want to continue?"):
     """Prompt user for y/n confirmation, exit on 'n'"""
@@ -32,12 +37,16 @@ def confirm_continue(message="Do you want to continue?"):
             print("Please enter 'y' or 'n'")
 
 
-# ============================================================================
-# MAIN PLAGIARISM CHECKER CLASS
-# ============================================================================
+# Main plagiarism checker class
+
+MIN_DOCUMENT_LENGTH = 100
+MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024
+
 
 class PlagiarismChecker:
-    def __init__(self, doc_path, max_sources=5, min_phrase_words=8, extract_pages=None, 
+    """Orchestrates the 5-step plagiarism detection workflow."""
+
+    def __init__(self, doc_path, max_sources=5, min_phrase_words=8, extract_pages=None,
                  page_position='middle', num_phrases=None, use_apis=False, use_local=False, 
                  search_engine='auto', cache_only=False):
         """Initialize the plagiarism checker with configuration parameters"""
@@ -106,7 +115,7 @@ class PlagiarismChecker:
         # STEP 1: Extract text from document
         doc_text = self.extractor.extract_text()
         
-        if len(doc_text) < 100:
+        if len(doc_text) < MIN_DOCUMENT_LENGTH:
             print("\n✗ Error: Document is too short for meaningful analysis")
             sys.exit(1)
         
@@ -171,9 +180,7 @@ class PlagiarismChecker:
         self.analyzer.generate_report(results, doc_text, download_failures, len(local_sources))
 
 
-# ============================================================================
-# COMMAND LINE INTERFACE
-# ============================================================================
+# Command line interface
 
 def validate_file(file_path):
     """Validate file exists and is accessible"""
@@ -196,13 +203,12 @@ def validate_file(file_path):
         sys.exit(1)
     
     # Warn about very large files
-    if file_path.stat().st_size > 100 * 1024 * 1024:  # 100MB
+    if file_path.stat().st_size > MAX_FILE_SIZE_BYTES:
         print(f"Warning: File is very large ({file_path.stat().st_size / 1024 / 1024:.1f}MB)")
         confirm_continue("Processing may take a long time. Continue?")
 
 def main():
-    import argparse
-
+    """Parse arguments and run the plagiarism check workflow."""
     parser = argparse.ArgumentParser(
         description='Check documents for plagiarism by searching online sources',
         formatter_class=argparse.RawDescriptionHelpFormatter,

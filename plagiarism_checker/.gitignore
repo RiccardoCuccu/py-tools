@@ -24,6 +24,8 @@ wheels/
 *.egg
 
 # Plagiarism Checker
+*.docx
+*.pdf
 .plagiarism_cache/
 *_plagiarism_report.txt
 .serpapi_config

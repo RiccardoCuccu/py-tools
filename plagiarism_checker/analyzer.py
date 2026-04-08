@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Similarity Analyzer Module - STEP 5
 
@@ -19,6 +20,8 @@ except ImportError as e:
 
 
 class SimilarityAnalyzer:
+    """Calculates TF-IDF cosine similarity between documents and generates reports."""
+
     def __init__(self, doc_path):
         """Initialize similarity analyzer"""
         self.doc_path = Path(doc_path)

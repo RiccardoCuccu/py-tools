@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Content Downloader Module - STEP 4
 
@@ -25,6 +26,8 @@ except ImportError as e:
 
 
 class ContentDownloader:
+    """Downloads and caches web content with multi-method retry and compressed storage."""
+
     def __init__(self, doc_path, cache_only=False):
         """Initialize content downloader with cache directory"""
         self.doc_path = Path(doc_path)
@@ -310,7 +313,7 @@ class ContentDownloader:
                     doc = fitz.open(stream=pdf_stream, filetype="pdf")  # type: ignore[attr-defined]
                     text = ""
                     for page in doc:
-                        text += page.get_text()
+                        text += str(page.get_text())
                     doc.close()
                     
                     if len(text) > 200:

@@ -47,6 +47,12 @@ python main.py document.docx --num-phrases 15
 # Use specific search engine
 python main.py document.docx --search-engine serpapi
 python main.py document.docx --search-engine duckduckgo
+
+# Limit the number of sources to check
+python main.py document.docx --max-sources 10
+
+# Typical thorough check - 3 middle pages, 10 sources, web + academic APIs
+python main.py document.docx --pages 3 --position middle --max-sources 10 --use-apis
 ```
 
 ### Options
@@ -77,16 +83,3 @@ pip install python-docx PyMuPDF requests beautifulsoup4 scikit-learn nltk
 ```
 
 See [SETUP.md](SETUP.md) for detailed setup instructions, including SerpApi configuration (recommended for reliable results).
-
-## Limitations
-
-- DuckDuckGo may rate-limit requests from the same IP address. Solutions:
-  - Use SerpApi (recommended, 100 free searches/month - see [SETUP.md](SETUP.md))
-  - Use `--use-local` to compare with local files only
-  - Wait 30-60 minutes and retry (often ineffective)
-  - Restart your router to get a new IP (temporary solution)
-- Only detects textual similarities (no paraphrasing or semantic rewording detection)
-- Only searches publicly accessible web content
-- Academic databases and paywalled content require `--use-apis` flag
-- Some publishers block automated access despite API fallbacks (403 Forbidden errors)
-- Results depend on the quality and availability of online sources

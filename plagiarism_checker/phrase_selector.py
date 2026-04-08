@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Phrase Selection Module - STEP 2
 
@@ -31,6 +32,8 @@ except LookupError:
 
 
 class PhraseSelector:
+    """Selects key phrases from document text using TF-IDF scoring for search queries."""
+
     def __init__(self, min_phrase_words=8, num_phrases=None):
         """Initialize phrase selector with configuration"""
         self.min_phrase_words = min_phrase_words

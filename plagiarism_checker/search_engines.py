@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Search Engines Module - STEP 3
 
@@ -24,6 +25,8 @@ from extractors import TextExtractor
 
 
 class SearchEngineManager:
+    """Manages online searches via DuckDuckGo, SerpApi, and academic APIs."""
+
     def __init__(self, search_engine, use_apis, use_local, doc_path):
         """Initialize search engine manager with configuration"""
         self.search_engine = search_engine
@@ -56,7 +59,7 @@ class SearchEngineManager:
         
         if config_path.exists():
             try:
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     api_key = f.read().strip()
                     if api_key:
                         print(f"✓ Using SerpApi key from {config_path}")
@@ -87,7 +90,7 @@ class SearchEngineManager:
                     save_path = self.script_dir / ".serpapi_config"
                     
                     try:
-                        with open(save_path, 'w') as f:
+                        with open(save_path, 'w', encoding='utf-8') as f:
                             f.write(api_key)
                         print(f"\n✓ API key saved to {save_path}")
                         
@@ -96,11 +99,11 @@ class SearchEngineManager:
                         try:
                             gitignore_content = ""
                             if gitignore_path.exists():
-                                with open(gitignore_path, 'r') as f:
+                                with open(gitignore_path, 'r', encoding='utf-8') as f:
                                     gitignore_content = f.read()
                             
                             if '.serpapi_config' not in gitignore_content:
-                                with open(gitignore_path, 'a') as f:
+                                with open(gitignore_path, 'a', encoding='utf-8') as f:
                                     if gitignore_content and not gitignore_content.endswith('\n'):
                                         f.write('\n')
                                     f.write('\n# SerpApi configuration\n.serpapi_config\n')
@@ -425,7 +428,7 @@ class SearchEngineManager:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
                     for result in soup.find_all('a', class_='result__a', limit=5):
-                        if (href := result.get('href')) and href.startswith('http'):
+                        if (href := result.get('href')) and isinstance(href, str) and href.startswith('http'):
                             if self._should_include_url(href):
                                 results.append(href)
                     

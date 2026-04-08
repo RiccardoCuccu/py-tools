@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Text Extraction Module - STEP 1
 
@@ -18,6 +19,8 @@ except ImportError as e:
 
 
 class TextExtractor:
+    """Extracts text from .docx, .pdf, and .txt files with optional partial-page support."""
+
     def __init__(self, doc_path, extract_pages=None, page_position='middle'):
         """Initialize text extractor with document path and extraction options"""
         self.doc_path = Path(doc_path)
@@ -89,7 +92,7 @@ class TextExtractor:
         print(f"\n[1/5] Extracting text from PDF: {self.doc_path.name}")
         try:
             with fitz.open(str(self.doc_path)) as doc:  # type: ignore[attr-defined]
-                full_text = "".join(page.get_text() for page in doc)
+                full_text = "".join(str(page.get_text()) for page in doc)
                 num_pages = len(doc)
             
             if self.extract_pages is None:
@@ -148,7 +151,7 @@ class TextExtractor:
         elif suffix == '.pdf':
             try:
                 with fitz.open(str(file_path)) as pdf_doc:  # type: ignore[attr-defined]
-                    return "".join(page.get_text() for page in pdf_doc)
+                    return "".join(str(page.get_text()) for page in pdf_doc)
             except Exception as e:
                 print(f"  Warning: Failed to read {file_path.name}: {e}")
                 return None
