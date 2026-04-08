@@ -1,15 +1,15 @@
 # Podcast Transcriber
 
-**Purpose:** `podcast_transcriber` is a tool designed to download and transcribe audio from podcast episodes available on Apple Podcasts. It automates the entire process of retrieving podcast metadata, downloading the episode audio, and converting it into a text transcript using the Vosk speech recognition engine.
+**Purpose:** `podcast_transcriber` downloads and transcribes Apple Podcasts episodes by fetching the audio via yt-dlp and converting it to text using a local Vosk speech recognition model.
 
 ## How it Works
 
-- The script first extracts the podcast ID and episode title from an Apple Podcast URL using the iTunes API. It fetches relevant metadata, including the podcast's RSS feed, which contains the necessary details about the episode.
-- Once the metadata is obtained, the script identifies the direct link to the original episode audio by parsing the RSS feed and searching for the closest match to the episode title.
-- After the episode link is found, the script downloads the audio using `yt-dlp` and converts it to a WAV file. The audio is processed using `FFmpeg`, converting it to a mono 16kHz WAV format for better compatibility with the transcription engine.
-- The Vosk model is used for transcription. If multiple Vosk models are available in the local directory, the script prompts the user to choose one. If only one model is present, it is automatically selected.
-- The audio file is transcribed using the Vosk engine. The KaldiRecognizer is initialized with the selected model, and the audio is processed frame by frame to generate the transcript. The final transcript is saved as a text file in a specified directory.
-- After the transcription, the script performs cleanup operations deleting the `__pycache__` directory.
+- Extracts the podcast ID and episode title from the Apple Podcasts URL using the iTunes API and fetches the RSS feed.
+- Parses the RSS feed to find the direct audio link matching the requested episode.
+- Downloads the audio with yt-dlp and converts it to a mono 16kHz WAV using ffmpeg.
+- If multiple Vosk models are present in `models/`, prompts the user to pick one; otherwise selects the only available model automatically.
+- Transcribes the audio frame by frame with Vosk's KaldiRecognizer and saves the result as a text file in `transcripts/`.
+- Deletes the `__pycache__` directory after the run.
 
 ## Usage
 ```
@@ -20,12 +20,10 @@ Provide the Apple Podcasts episode URL when prompted.
 
 ## Installation
 
-To use `podcast_transcriber`, you'll need to install the following Python libraries:
-
 ```
-pip install yt-dlp requests feedparser beautifulsoup4 vosk pydub
+pip install requests feedparser beautifulsoup4 pydub vosk
 ```
 
-Additionally, `ffmpeg` must be installed on your system and accessible via the command line. Follow the [official FFmpeg installation guide](https://ffmpeg.org/download.html) for your operating system.
+`pydub` requires `ffmpeg` for MP3 decoding. Install it and make sure it is available on PATH. See the [official FFmpeg installation guide](https://ffmpeg.org/download.html).
 
-Moreover, it is necessary to download a Vosk speech recognition model. You can find and download the appropriate model from [https://alphacephei.com/vosk/models](https://alphacephei.com/vosk/models), then place the downloaded model in the `models` directory where the script will locate it.
+Download a Vosk speech recognition model from https://alphacephei.com/vosk/models and place the model folder inside the `models/` directory.
