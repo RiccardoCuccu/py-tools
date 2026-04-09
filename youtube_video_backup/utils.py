@@ -15,6 +15,7 @@ class StorageManager:
     """Manages persistent data storage"""
     
     def __init__(self, config):
+        """Initialise storage paths and create required directories."""
         self.config = config
         self._ensure_directories()
     
@@ -100,8 +101,9 @@ class Logger:
     """Handles logging and console output"""
     
     def __init__(self, config):
+        """Initialise logger with the active configuration."""
         self.config = config
-    
+
     def log_backed_up_video(self, video_id, video_title, channel_title, backup_video_id):
         """Log backed up video to file and print compact format"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

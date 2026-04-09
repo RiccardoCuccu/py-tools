@@ -4,14 +4,24 @@ Video Handler Module
 Handles video download (yt-dlp) and upload to YouTube
 """
 
-import os
 import json
+import os
+import socket
 import subprocess
+import time
+
 import yt_dlp
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
 # YouTube API Quota Costs (as per YouTube Data API v3 documentation)
 QUOTA_VIDEO_UPLOAD = 1600
+
+# Upload retry settings
+UPLOAD_MAX_RETRIES = 10
+UPLOAD_INITIAL_BACKOFF_SECONDS = 2
+UPLOAD_MAX_BACKOFF_SECONDS = 60
+RETRYABLE_HTTP_STATUS_CODES = {500, 502, 503, 504}
 QUOTA_THUMBNAIL_UPLOAD = 50
 
 # Quality constraints
@@ -26,8 +36,9 @@ class VideoDownloader:
     THUMBNAIL_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
     
     def __init__(self, config):
+        """Initialise the video downloader with the active configuration."""
         self.config = config
-    
+
     @staticmethod
     def _find_file_with_extensions(base_path, extensions):
         """Find first existing file matching base_path with given extensions"""
@@ -147,16 +158,6 @@ class VideoDownloader:
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web_safari'],
-                        'player_skip': ['configs'],
-                    }
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
@@ -173,6 +174,15 @@ class VideoDownloader:
                 for fmt in formats:
                     # Only include formats with video stream
                     if fmt.get('vcodec') != 'none':
+                        # Identify HLS/DASH problematic formats
+                        protocol = fmt.get('protocol', '')
+
+                        # Detect HLS: check protocol and URL
+                        is_hls = 'm3u8' in protocol or 'hls' in protocol.lower()
+                        if not is_hls and 'url' in fmt:
+                            # Fallback: check URL for m3u8
+                            is_hls = '.m3u8' in str(fmt.get('url', ''))
+
                         format_info = {
                             'id': fmt.get('format_id', 'unknown'),
                             'ext': fmt.get('ext', 'unknown'),
@@ -183,22 +193,31 @@ class VideoDownloader:
                             'acodec': fmt.get('acodec', 'none'),
                             'filesize': fmt.get('filesize', 0),
                             'tbr': fmt.get('tbr', 0),
+                            'is_hls': is_hls,
                         }
                         video_formats.append(format_info)
 
                 # Sort by resolution (height) descending, handling None values
-                video_formats.sort(key=lambda x: (x['height'] or 0, x['tbr'] or 0), reverse=True)
+                # Prioritize by: 1) resolution (height in pixels), 2) non-HLS at same resolution
+                def sort_key(fmt):
+                    height = fmt['height'] or 0
+                    is_hls = fmt.get('is_hls', False)
+                    # Higher resolution wins, but at same resolution prefer non-HLS
+                    # not is_hls = True (1) for non-HLS, False (0) for HLS
+                    return (height, not is_hls)
+
+                video_formats.sort(key=sort_key, reverse=True)
 
                 if not video_formats:
                     print("   ❌ No video formats available")
                     return None
 
                 # Display formats
-                print(f"\n{'─'*80}")
+                print(f"\n{'─'*88}")
                 print(f"📹 Available formats ({len(video_formats)} total):")
-                print(f"{'─'*80}")
-                print(f"{'#':<4} {'ID':<8} {'Resolution':<15} {'FPS':<6} {'Ext':<6} {'Audio':<10} {'Size':<12}")
-                print(f"{'─'*80}")
+                print(f"{'─'*88}")
+                print(f"{'#':<4} {'ID':<8} {'Resolution':<15} {'FPS':<6} {'Ext':<6} {'Audio':<10} {'Size':<12} {'Type':<8}")
+                print(f"{'─'*88}")
 
                 for idx, fmt in enumerate(video_formats, 1):
                     has_audio = '✓ Yes' if fmt['acodec'] != 'none' else '✗ No'
@@ -216,25 +235,47 @@ class VideoDownloader:
                     else:
                         fps_str = "?"
 
-                    print(f"{idx:<4} {fmt['id']:<8} {fmt['resolution']:<15} {fps_str:<6} "
-                          f"{fmt['ext']:<6} {has_audio:<10} {size_str:<12}")
+                    # Format type
+                    format_type = "⚠️ HLS" if fmt['is_hls'] else "Standard"
 
-                print(f"{'─'*80}")
+                    print(f"{idx:<4} {fmt['id']:<8} {fmt['resolution']:<15} {fps_str:<6} "
+                          f"{fmt['ext']:<6} {has_audio:<10} {size_str:<12} {format_type:<8}")
+
+                print(f"{'─'*88}")
+
+                # Display HLS warning if any HLS formats are present
+                if any(fmt['is_hls'] for fmt in video_formats):
+                    print("\n⚠️  Note: HLS formats may have unstable fragments and could fail mid-download.")
 
                 # Ask user to choose
+                print("\nOptions:")
+                print("  [number] - Select specific format by number")
+                print("  a        - Auto-select best available format (recommended)")
+                print("  0        - Cancel")
+
                 while True:
                     try:
-                        choice = input("\nSelect format number (or 0 to cancel): ").strip()
+                        choice = input("\nYour choice: ").strip().lower()
 
+                        # Handle auto-select
+                        if choice == 'a':
+                            # Auto-select: first in list (already sorted with non-HLS priority)
+                            selected = video_formats[0]
+                            format_quality = "non-HLS" if not selected['is_hls'] else "HLS"
+                            print(f"\n✓ Auto-selected: Format {selected['id']} - {selected['resolution']} ({format_quality})")
+                            return selected['id']
+
+                        # Handle cancel
+                        if choice == '0':
+                            print("   Operation cancelled")
+                            return None
+
+                        # Handle numeric selection
                         if not choice.isdigit():
-                            print("❌ Please enter a valid number")
+                            print("❌ Invalid input. Enter a number, 'a' for auto, or '0' to cancel")
                             continue
 
                         choice_num = int(choice)
-
-                        if choice_num == 0:
-                            print("   Operation cancelled")
-                            return None
 
                         if 1 <= choice_num <= len(video_formats):
                             selected = video_formats[choice_num - 1]
@@ -306,16 +347,31 @@ class VideoDownloader:
 
         # Determine format string
         if custom_format:
-            # Use custom format selected by user
-            format_string = f"{custom_format}+bestaudio/best"
+            # Use custom format selected by user with robust fallback chain
+            format_string = (
+                f"{custom_format}+bestaudio[ext=m4a]/"
+                f"{custom_format}+bestaudio/"
+                f"{custom_format}/"
+                f"best"
+            )
             print(f"   Note: Using custom format {custom_format}")
         else:
-            # Format 96 is 1080p m3u8/HLS - most reliable and works consistently
+            # Prioritize progressive formats (mp4, webm) instead of HLS
             if self.config.require_native_quality:
-                format_string = f"96/bestvideo[height>={MIN_NATIVE_HEIGHT}]+bestaudio/best[height>={MIN_NATIVE_HEIGHT}]"
+                format_string = (
+                    f"bestvideo[height>={MIN_NATIVE_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/"
+                    f"bestvideo[height>={MIN_NATIVE_HEIGHT}]+bestaudio/"
+                    f"best[height>={MIN_NATIVE_HEIGHT}][ext=mp4]/"
+                    f"best[height>={MIN_NATIVE_HEIGHT}]"
+                )
                 print(f"   Note: Requiring {MIN_NATIVE_HEIGHT}p+ quality")
             else:
-                format_string = "96/bestvideo+bestaudio/best"
+                format_string = (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+                    "bestvideo+bestaudio/"
+                    "best[ext=mp4]/"
+                    "best"
+                )
                 print(f"   Note: Accepting best available quality")
 
         ydl_opts = {
@@ -327,16 +383,9 @@ class VideoDownloader:
             'quiet': False,
             'no_warnings': True,
             'ignoreerrors': False,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web_safari'],
-                    'player_skip': ['configs'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
+            'socket_timeout': self.config.socket_timeout,
+            'retries': self.config.download_retries,
+            'fragment_retries': self.config.fragment_retries,
         }
 
         try:
@@ -355,6 +404,11 @@ class VideoDownloader:
 
                 if not video_file:
                     self._log_download_error("Video file not found after download")
+                    # Likely a network timeout that exhausted all retries
+                    if not self.config.auto_confirm:
+                        choice = input("\n   Retry download? (r=retry / s=skip): ").strip().lower()
+                        if choice == 'r':
+                            return self.download(video_url, output_dir, custom_format=custom_format)
                     return self._create_result()
 
                 # Find thumbnail file
@@ -452,39 +506,69 @@ def upload_video(youtube_service, video_data, config, youtube_client):
         youtube_client.save_quota_state()
     
     response = None
+    retry_count = 0
+    backoff = UPLOAD_INITIAL_BACKOFF_SECONDS
     print("   Uploading...", end='', flush=True)
-    
-    try:
-        while response is None:
+
+    while response is None:
+        try:
             status, response = request.next_chunk()
             if status:
                 progress = int(status.progress() * 100)
                 print(f"\r   Uploading... {progress}%", end='', flush=True)
-        
-        print(f"\r✓ Video uploaded successfully! ID: {response['id']}")
-    
-    except Exception as e:
-        # Handle upload errors with proper cleanup
-        print(f"\r❌ Upload failed: {str(e)}")
-        raise
+            retry_count = 0
+            backoff = UPLOAD_INITIAL_BACKOFF_SECONDS
+        except HttpError as e:
+            if e.resp.status not in RETRYABLE_HTTP_STATUS_CODES or retry_count >= UPLOAD_MAX_RETRIES:
+                print(f"\r❌ Upload failed: {e}")
+                raise
+            retry_count += 1
+            print(f"\r   ⚠️  HTTP {e.resp.status}, retrying in {backoff}s ({retry_count}/{UPLOAD_MAX_RETRIES})...", end='', flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, UPLOAD_MAX_BACKOFF_SECONDS)
+        except (ConnectionResetError, ConnectionError, socket.timeout) as e:
+            # ConnectionResetError (WinError 10054) is not caught by the library's
+            # built-in retry - must be handled at application level
+            if retry_count >= UPLOAD_MAX_RETRIES:
+                print(f"\r❌ Upload failed: {e}")
+                raise
+            retry_count += 1
+            print(f"\r   ⚠️  Connection reset, retrying in {backoff}s ({retry_count}/{UPLOAD_MAX_RETRIES})...", end='', flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, UPLOAD_MAX_BACKOFF_SECONDS)
+
+    print(f"\r✓ Video uploaded successfully! ID: {response['id']}")
     
     # Upload thumbnail if available
     if thumbnail_file and os.path.exists(thumbnail_file):
+        converted_thumbnail = None
         try:
             print("   Uploading thumbnail...", end='', flush=True)
-            
+
+            # YouTube only accepts JPG/PNG - convert WebP if needed
+            upload_thumbnail = thumbnail_file
+            if thumbnail_file.lower().endswith('.webp'):
+                from PIL import Image
+                converted_thumbnail = os.path.splitext(thumbnail_file)[0] + '_thumb.jpg'
+                with Image.open(thumbnail_file) as img:
+                    img.convert('RGB').save(converted_thumbnail, 'JPEG', quality=95)
+                upload_thumbnail = converted_thumbnail
+
             # Track quota cost and save to disk immediately before thumbnail upload
             if youtube_client:
                 youtube_client.add_quota_cost(QUOTA_THUMBNAIL_UPLOAD)
                 youtube_client.save_quota_state()
-            
+
             youtube_service.thumbnails().set(  # type: ignore
                 videoId=response['id'],
-                media_body=MediaFileUpload(thumbnail_file)  # type: ignore[arg-type]
+                media_body=MediaFileUpload(upload_thumbnail)  # type: ignore[arg-type]
             ).execute()
-            
+
             print("\r✓ Thumbnail uploaded successfully!")
         except Exception as e:
             print(f"\r⚠️ Error uploading thumbnail: {e}")
+        finally:
+            if converted_thumbnail and os.path.exists(converted_thumbnail):
+                os.remove(converted_thumbnail)
     
     return response['id']

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-YouTube Video Backup Script - Main Entry Point
-Downloads videos from a YouTube channel and re-uploads them to a secondary channel as private
+YouTube Video Backup - Download videos from a YouTube channel and re-upload them to a backup channel.
+
+Fetches the source channel's video list, downloads each video via yt-dlp, and
+re-uploads to a secondary channel as private. Resumes from the last checkpoint.
+
+Usage:
+    python main.py
 """
 
 import os
@@ -9,6 +14,7 @@ import sys
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any
+
 from config import Config, first_run_setup, DOWNLOAD_DIR
 from youtube_client import YouTubeClient, QUOTA_DAILY_LIMIT  # type: ignore
 from video_handler import VideoDownloader, upload_video, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD

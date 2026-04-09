@@ -6,14 +6,16 @@ Handles all YouTube API interactions, OAuth authentication, and RSS feed parsing
 
 import os
 import sys
-from typing import Optional
 from datetime import datetime, timezone
-import pytz
+from typing import Optional
+
 import feedparser
-from googleapiclient.discovery import build, Resource
-from google_auth_oauthlib.flow import InstalledAppFlow
+import pytz
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build, Resource
+
 from config import SCOPES, CLIENT_SECRET_FILE, TOKEN_FILE, API_KEY_FILE
 
 # YouTube API Quota Costs (as per YouTube Data API v3 documentation)
@@ -30,6 +32,7 @@ class YouTubeClient:
     """Manages YouTube API interactions and authentication"""
     
     def __init__(self, config, storage_manager):
+        """Initialise the YouTube client and restore today's quota usage from state."""
         self.config = config
         self.storage = storage_manager
         self.service: Optional[Resource] = None

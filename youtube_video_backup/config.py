@@ -8,9 +8,9 @@ import os
 import json
 import sys
 
-# =====================================
+# ---------------------------------------------------------------------------
 # GENERAL CONFIGURATION - EDIT THESE VALUES
-# =====================================
+# ---------------------------------------------------------------------------
 
 # Script Behavior
 DRY_RUN = False                                         # Set to True to simulate without actually uploading videos
@@ -28,16 +28,20 @@ UPLOAD_CHUNK_SIZE_MB = 50                               # Upload chunk size in M
                                                         # Set to -1 to upload entire file in one chunk (not recommended for large files)
 VIDEO_PRIVACY_STATUS = "unlisted"                       # Privacy status for uploaded videos: "private", "unlisted", or "public"
                                                         # Default: "unlisted" (video not listed but accessible via link)
+SOCKET_TIMEOUT_SECONDS = 60                             # Seconds before a network read is considered timed out
+                                                        # yt-dlp default is 20 - increase for slow CDN edges
+DOWNLOAD_RETRIES = 15                                   # Max number of overall download retries per video
+FRAGMENT_RETRIES = 25                                   # Max retries for each individual fragment
+                                                        # Higher values help with flaky CDN connections
 
-# =====================================
+# ---------------------------------------------------------------------------
 # TECHNICAL CONFIGURATION (DO NOT EDIT)
-# =====================================
+# ---------------------------------------------------------------------------
 
 # OAuth Scopes
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload',
           'https://www.googleapis.com/auth/youtube.readonly']
 
-# Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Configuration subdirectory for all generated files
@@ -54,10 +58,6 @@ API_KEY_FILE = os.path.join(CONFIG_DIR, "api_key.txt")              # YouTube AP
 CHANNEL_VIDEOS_FILE = os.path.join(CONFIG_DIR, "channel_videos.json") # Complete channel video cache (auto-generated)
 DOWNLOAD_DIR = os.path.join(SCRIPT_DIR, 'downloads')                # Downloads stay in root
 
-# =====================================
-# CONFIG CLASS
-# =====================================
-
 class Config:
     """Configuration manager"""
     
@@ -73,6 +73,9 @@ class Config:
         self.require_native_quality = REQUIRE_NATIVE_QUALITY
         self.upload_chunk_size_mb = UPLOAD_CHUNK_SIZE_MB
         self.video_privacy_status = VIDEO_PRIVACY_STATUS
+        self.socket_timeout = SOCKET_TIMEOUT_SECONDS
+        self.download_retries = DOWNLOAD_RETRIES
+        self.fragment_retries = FRAGMENT_RETRIES
     
     @classmethod
     def load(cls):
@@ -102,9 +105,7 @@ class Config:
         
         return status
 
-# =====================================
-# SETUP WIZARD
-# =====================================
+# Setup wizard
 
 def create_default_config():
     """Create default config.json file"""
@@ -166,12 +167,10 @@ def first_run_setup():
     print("FIRST RUN SETUP - YouTube Video Backup Script")
     print("="*60 + "\n")
     
-    # Create config directory if it doesn't exist
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
         print(f"✓ Created configuration directory: {CONFIG_DIR}\n")
     
-    # Check for client_secret.json first
     if not check_client_secret():
         print(f"⚠️  Missing {CLIENT_SECRET_FILE}!\n")
         print(f"┌────────────────────────────────────────────────────┐")
@@ -218,7 +217,6 @@ def first_run_setup():
     
     print("✓ Client secret file found\n")
     
-    # Check for API key
     if not check_api_key():
         print(f"⚠️  Missing {API_KEY_FILE}!\n")
         print(f"┌────────────────────────────────────────────────────┐")
@@ -256,7 +254,6 @@ def first_run_setup():
     
     print("✓ API key file found\n")
     
-    # Load or create config
     if not os.path.exists(CONFIG_FILE):
         print(f"Creating {CONFIG_FILE}...\n")
         config = create_default_config()
@@ -280,7 +277,6 @@ def first_run_setup():
         print(f"✓ Source Channel ID: {source_id}")
         print(f"✓ Backup Channel ID: {backup_id}\n")
     
-    # Save config if updated
     if config_updated:
         with open(CONFIG_FILE, "w", encoding="utf-8") as file:
             json.dump(config, file, indent=2)
@@ -315,10 +311,7 @@ def first_run_setup():
     
     print("✓ Configuration complete")
     
-    # Format chunk size display
     chunk_display = f"{UPLOAD_CHUNK_SIZE_MB}MB" if UPLOAD_CHUNK_SIZE_MB > 0 else "Single chunk (entire file)"
-    
-    # Format privacy status display
     privacy_display_map = {
         'private': 'Private (only you can see)',
         'unlisted': 'Unlisted (accessible via link)',
