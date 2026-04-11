@@ -13,9 +13,8 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Optional, Dict, Any
 
-from config import Config, first_run_setup, DOWNLOAD_DIR
+from config import Config, first_run_setup, validate_configuration, DOWNLOAD_DIR
 from youtube_client import YouTubeClient, QUOTA_DAILY_LIMIT  # type: ignore
 from video_handler import VideoDownloader, upload_video, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD
 from utils import StorageManager, Logger, safe_remove_files
@@ -23,6 +22,65 @@ from utils import StorageManager, Logger, safe_remove_files
 # Video processing constants
 VIDEOS_PER_API_PAGE = 50
 ESTIMATED_COST_PER_VIDEO = QUOTA_VIDEO_UPLOAD + QUOTA_THUMBNAIL_UPLOAD  # Upload + thumbnail
+
+
+def _run_download(downloader, video, config, logger, last_upload_time):
+    """Attempt to download a video, prompting for retry on failure.
+
+    Returns the video_data dict on success, or None to signal the caller to
+    skip this video. Raises SystemExit if the user chooses to quit.
+    """
+    while True:
+        # Apply post-upload delay before the next download
+        if last_upload_time is not None and config.download_delay > 0:
+            elapsed = time.time() - last_upload_time
+            remaining_delay = config.download_delay - elapsed
+            if remaining_delay > 0:
+                print(f"\n⏳ Waiting {remaining_delay:.1f} more seconds before next download...")
+                time.sleep(remaining_delay)
+            else:
+                print(f"\n✓ Delay already satisfied ({elapsed:.1f}s elapsed since last upload)")
+
+        try:
+            video_data = downloader.download(video['url'], DOWNLOAD_DIR)
+        except Exception as e:
+            logger.log_error(f"Error during download: {e}")
+            if ask_retry_operation("download", config.auto_confirm):
+                print("\n🔄 Retrying download...")
+                continue
+            print("⏭️ Skipping this video.")
+            return None
+
+        if not video_data['success'] or not video_data['video_file']:
+            logger.log_warning("Video file not found after download")
+            if ask_retry_operation("download", config.auto_confirm):
+                print("\n🔄 Retrying download...")
+                continue
+            print("⏭️ Skipping this video.")
+            return None
+
+        return video_data
+
+
+def _run_upload(youtube, video_data, config, logger):
+    """Attempt to upload a video, prompting for retry on failure.
+
+    Returns the uploaded video ID string on success, or None to signal the
+    caller to skip this video. Re-raises the exception if uploadLimitExceeded
+    so the caller can abort the entire run.
+    """
+    while True:
+        try:
+            return upload_video(youtube.service, video_data, config, youtube)
+        except Exception as e:
+            if "uploadLimitExceeded" in str(e):
+                raise
+            logger.log_error(f"Error during upload: {e}")
+            if ask_retry_operation("upload", config.auto_confirm):
+                print("\n🔄 Retrying upload...")
+                continue
+            print("⏭️ Skipping this video.")
+            return None
 
 
 def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quota_today, 
@@ -92,8 +150,8 @@ def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quot
     print(f"{'='*60}\n")
 
 
-def confirm_backup(video, auto_confirm=False):
-    """Ask user confirmation for backing up a video"""
+def confirm_backup(auto_confirm=False):
+    """Ask user confirmation for backing up a video."""
     if auto_confirm:
         return True
     
@@ -140,6 +198,9 @@ def main():
     print("║    YouTube Automatic Backup Script    ║")
     print("╚═══════════════════════════════════════╝\n")
     
+    # Validate config before any side effects
+    validate_configuration()
+
     # First run setup
     if not first_run_setup():
         sys.exit(1)
@@ -151,7 +212,7 @@ def main():
     storage = StorageManager(config)
     logger = Logger(config)
     youtube = YouTubeClient(config, storage)  # Pass storage to YouTubeClient
-    downloader = VideoDownloader(config)
+    downloader = VideoDownloader(config, logger)
     # Note: upload_video is now a function, not a class
     
     # Authenticate
@@ -321,187 +382,79 @@ def main():
     videos_backed_up = 0
     interruption_reason = None
     last_upload_time = None  # Track when last upload finished
-    
+
     for idx, video in enumerate(videos_to_backup, start_num):
         print(f"\n{'─'*60}")
         print(f"📹 Video {idx}/{len(source_videos)}: {video['title']}")
         print(f"{'─'*60}")
-        
+
         # Show current quota status before asking
         current_used = youtube.get_quota_today()
         remaining = QUOTA_DAILY_LIMIT - current_used
         remaining_after = remaining - ESTIMATED_COST_PER_VIDEO
-        
+
         print(f"\n💰 Quota status:")
         print(f"   • Currently used today: {current_used:,} / {QUOTA_DAILY_LIMIT:,} units")
         print(f"   • Remaining: {remaining:,} units")
         print(f"   • This video will cost: ~{ESTIMATED_COST_PER_VIDEO} units (upload + thumbnail)")
         print(f"   • After upload: ~{remaining_after:,} units remaining")
-        
+
         if remaining < ESTIMATED_COST_PER_VIDEO:
             print(f"\n   ⚠️  WARNING: Not enough quota for this video!")
             print(f"   Quota resets at midnight Pacific Time")
-        
+
         # Ask for confirmation
-        if not confirm_backup(video, config.auto_confirm):
+        if not confirm_backup(config.auto_confirm):
             print("⏭️ Video skipped.")
             continue
-        
-        # Retry loop for entire backup process (download + upload)
-        backup_success = False
-        video_data: Optional[Dict[str, Any]] = None
-        
-        while not backup_success:
-            try:
-                # DOWNLOAD PHASE with retry
-                download_success = False
-                while not download_success:
-                    try:
-                        # Apply delay BEFORE download if needed
-                        if last_upload_time is not None and config.download_delay > 0:
-                            elapsed = time.time() - last_upload_time
-                            remaining_delay = config.download_delay - elapsed
-                            
-                            if remaining_delay > 0:
-                                print(f"\n⏳ Waiting {remaining_delay:.1f} more seconds before next download...")
-                                time.sleep(remaining_delay)
-                            else:
-                                print(f"\n✓ Delay already satisfied ({elapsed:.1f}s elapsed since last upload)")
-                        
-                        # Download video
-                        video_data = downloader.download(video['url'], DOWNLOAD_DIR)
-                        
-                        if not video_data['success'] or not video_data['video_file']:
-                            logger.log_warning("Error: video file not found after download")
-                            
-                            # Ask if user wants to retry download
-                            if ask_retry_operation("download", config.auto_confirm):
-                                print("\n🔄 Retrying download...")
-                                continue
-                            else:
-                                print("⏭️ Skipping this video.")
-                                download_success = None  # Signal to skip video entirely
-                                break
-                        
-                        # If we get here, download was successful
-                        download_success = True
-                        
-                    except Exception as e:
-                        logger.log_error(f"Error during download: {e}")
-                        
-                        # Ask if user wants to retry download
-                        if ask_retry_operation("download", config.auto_confirm):
-                            print("\n🔄 Retrying download...")
-                            continue
-                        else:
-                            print("⏭️ Skipping this video.")
-                            download_success = None  # Signal to skip video entirely
-                            break
-                
-                # Check if download was skipped
-                if download_success is None:
-                    break  # Exit backup loop for this video
-                
-                # Ensure video_data is valid before proceeding to upload
-                if not video_data:
-                    print("⚠️  No video data available, skipping upload.")
-                    break
-                
-                # UPLOAD PHASE with retry
-                upload_success = False
-                while not upload_success:
-                    try:
-                        # Upload video
-                        uploaded_video_id = upload_video(youtube.service, video_data, config, youtube)
-                        
-                        # If we get here, upload was successful
-                        upload_success = True
-                        backup_success = True
-                        
-                        # Record upload completion time
-                        last_upload_time = time.time()
-                        
-                        # Save to archive
-                        storage.save_to_archive(video['id'])
-                        
-                        # Log the backup
-                        logger.log_backed_up_video(
-                            video['id'],
-                            video['title'],
-                            video_data['info'].get('channel', 'Unknown Channel'),
-                            uploaded_video_id
-                        )
-                        
-                        # Cleanup temporary files (if enabled)
-                        if config.delete_after_upload:  # type: ignore
-                            print("\n🧹 Cleaning up temporary files...")
-                            safe_remove_files(
-                                video_data.get('video_file'),
-                                video_data.get('thumbnail_file')
-                            )
-                        else:
-                            print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
-                            print(f"   Video: {os.path.basename(video_data['video_file'])}")
-                            if video_data.get('thumbnail_file'):
-                                print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
-                        
-                        print(f"\n✅ Backup completed successfully!")
-                        videos_backed_up += 1
-                        
-                        # Update state
-                        state["total_videos_backed_up"] = state.get("total_videos_backed_up", 0) + 1
-                        state["last_backup_date"] = datetime.now().isoformat()
-                        storage.save_state(state)
-                        
-                    except Exception as e:
-                        error_str = str(e)
-                        logger.log_error(f"Error during upload: {e}")
-                        
-                        # Check for specific YouTube errors that should stop the entire process
-                        if "uploadLimitExceeded" in error_str:
-                            interruption_reason = "Upload limit exceeded"
-                            upload_success = None  # Signal to exit entirely
-                            backup_success = None  # Signal to exit entirely
-                            break
-                        
-                        # For other errors, ask if user wants to retry upload
-                        if ask_retry_operation("upload", config.auto_confirm):
-                            print("\n🔄 Retrying upload...")
-                            continue
-                        else:
-                            print("⏭️ Skipping this video.")
-                            upload_success = None  # Signal to skip video entirely
-                            break
-                
-                # Check if we need to exit entirely (upload limit exceeded)
-                if upload_success is None and backup_success is None:
-                    break  # Exit the main backup loop
-                
-                # Check if upload was skipped
-                if upload_success is None:
-                    break  # Exit backup loop for this video
-                
-            except Exception as e:
-                error_str = str(e)
-                logger.log_error(f"Unexpected error during backup: {e}")
-                
-                # Check for critical errors
-                if "uploadLimitExceeded" in error_str:
-                    interruption_reason = "Upload limit exceeded"
-                    break
-                
-                if not config.auto_confirm:
-                    response = input("Continue with the next video? (y/n): ").lower()
-                    if response != 'y':
-                        interruption_reason = "User stopped backup"
-                        break
-                else:
-                    print("Auto-continuing to next video...")
-                
-                # Break the retry loop
+
+        # Download phase
+        video_data = _run_download(downloader, video, config, logger, last_upload_time)
+        if video_data is None:
+            continue
+
+        # Upload phase
+        try:
+            uploaded_video_id = _run_upload(youtube, video_data, config, logger)
+        except Exception as e:
+            if "uploadLimitExceeded" in str(e):
+                interruption_reason = "Upload limit exceeded"
                 break
-        
-        # Check if we need to stop processing entirely
+            logger.log_error(f"Unexpected error during upload: {e}")
+            break
+
+        if uploaded_video_id is None:
+            continue
+
+        # Success: record and clean up
+        last_upload_time = time.time()
+        storage.save_to_archive(video['id'])
+        logger.log_backed_up_video(
+            video['id'],
+            video['title'],
+            video_data['info'].get('channel', 'Unknown Channel'),
+            uploaded_video_id
+        )
+
+        if config.delete_after_upload:
+            print("\n🧹 Cleaning up temporary files...")
+            safe_remove_files(
+                video_data.get('video_file'),
+                video_data.get('thumbnail_file')
+            )
+        else:
+            print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
+            print(f"   Video: {os.path.basename(video_data['video_file'])}")
+            if video_data.get('thumbnail_file'):
+                print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
+
+        print(f"\n✅ Backup completed successfully!")
+        videos_backed_up += 1
+
+        state["total_videos_backed_up"] = state.get("total_videos_backed_up", 0) + 1
+        state["last_backup_date"] = datetime.now().isoformat()
+        storage.save_state(state)
+
         if interruption_reason:
             break
     

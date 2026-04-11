@@ -16,7 +16,8 @@ import sys
 DRY_RUN = False                                         # Set to True to simulate without actually uploading videos
 AUTO_CONFIRM = False                                    # Set to True to skip confirmation prompts for each video
 USE_API_FALLBACK = True                                 # Set to True to use YouTube API if yt-dlp fails
-DOWNLOAD_DELAY_SECONDS = 2                              # Delay between downloads to avoid rate limiting
+DOWNLOAD_DELAY_SECONDS = 2                              # Minimum seconds between the end of an upload
+                                                        # and the start of the next download, to avoid rate limiting
 INITIAL_FULL_BACKUP = True                              # Set to True to do full channel backup via API (first run only)
                                                         # After first complete backup, set to False or delete state.json to trigger again
 DELETE_AFTER_UPLOAD = False                             # Set to True to delete video files after successful upload
@@ -33,6 +34,14 @@ SOCKET_TIMEOUT_SECONDS = 60                             # Seconds before a netwo
 DOWNLOAD_RETRIES = 15                                   # Max number of overall download retries per video
 FRAGMENT_RETRIES = 25                                   # Max retries for each individual fragment
                                                         # Higher values help with flaky CDN connections
+HTTP_CHUNK_SIZE_MB = 5                                  # Break each stream into chunks of this size (in MB)
+                                                        # Smaller chunks = each HTTP request covers less data,
+                                                        # so a timeout only retries that chunk, not the whole stream
+                                                        # YouTube throttles chunks > 10MB - keep at or below 10
+COOKIES_FROM_BROWSER = "chrome"                         # Browser to extract cookies from for bot-detection bypass
+                                                        # Supported: chrome, firefox, edge, opera, brave, chromium
+                                                        # Leave empty ("") to disable - requires the browser to be closed
+                                                        # on Windows before running, otherwise the cookie DB is locked
 
 # ---------------------------------------------------------------------------
 # TECHNICAL CONFIGURATION (DO NOT EDIT)
@@ -76,6 +85,8 @@ class Config:
         self.socket_timeout = SOCKET_TIMEOUT_SECONDS
         self.download_retries = DOWNLOAD_RETRIES
         self.fragment_retries = FRAGMENT_RETRIES
+        self.http_chunk_size = HTTP_CHUNK_SIZE_MB * 1024 * 1024
+        self.cookies_from_browser = COOKIES_FROM_BROWSER
     
     @classmethod
     def load(cls):
@@ -104,6 +115,45 @@ class Config:
             return 'unlisted'
         
         return status
+
+
+def validate_configuration():
+    """Validate all required configuration before any side effects occur.
+
+    Collects all errors and raises a single ValueError listing them all,
+    so the user sees every problem at once rather than one at a time.
+    """
+    errors = []
+
+    if not os.path.exists(CONFIG_FILE):
+        errors.append(f"config.json not found at {CONFIG_FILE} - run first_run_setup()")
+    else:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not data.get("source_channel_id") or data["source_channel_id"] == "YOUR_SOURCE_CHANNEL_ID_HERE":
+            errors.append("source_channel_id is not set in config.json")
+        if not data.get("backup_channel_id") or data["backup_channel_id"] == "YOUR_BACKUP_CHANNEL_ID_HERE":
+            errors.append("backup_channel_id is not set in config.json")
+
+    valid_privacy = {"private", "unlisted", "public"}
+    if VIDEO_PRIVACY_STATUS.lower() not in valid_privacy:
+        errors.append(
+            f"VIDEO_PRIVACY_STATUS '{VIDEO_PRIVACY_STATUS}' is invalid - must be one of {valid_privacy}"
+        )
+
+    if UPLOAD_CHUNK_SIZE_MB < -1 or UPLOAD_CHUNK_SIZE_MB == 0:
+        errors.append(
+            f"UPLOAD_CHUNK_SIZE_MB must be -1 (single chunk) or a positive integer, got {UPLOAD_CHUNK_SIZE_MB}"
+        )
+
+    if HTTP_CHUNK_SIZE_MB > 10:
+        errors.append(
+            f"HTTP_CHUNK_SIZE_MB is {HTTP_CHUNK_SIZE_MB} - YouTube throttles chunks > 10MB, keep at or below 10"
+        )
+
+    if errors:
+        raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
+
 
 # Setup wizard
 

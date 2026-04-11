@@ -123,11 +123,17 @@ class Logger:
         print(message)
     
     def log_error(self, message):
-        """Log error message"""
+        """Log error message to console and file."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] ERROR: {message}\n")
         print(f"❌ {message}")
-    
+
     def log_warning(self, message):
-        """Log warning message"""
+        """Log warning message to console and file."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] WARNING: {message}\n")
         print(f"⚠️  {message}")
 
 

@@ -11,6 +11,7 @@ from typing import Optional
 
 import feedparser
 import pytz
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -107,8 +108,13 @@ class YouTubeClient:
         
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
-                credentials.refresh(Request())
-            else:
+                try:
+                    credentials.refresh(Request())
+                except RefreshError:
+                    print("⚠️  OAuth token expired and could not be refreshed. Re-authenticating...")
+                    os.remove(TOKEN_FILE)
+                    credentials = None
+            if not credentials or not credentials.valid:
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(
                         CLIENT_SECRET_FILE,
@@ -161,8 +167,7 @@ class YouTubeClient:
         # Load API key and create service
         api_key = self._load_api_key()
         if not api_key:
-            print("ERROR: API key not found!")
-            sys.exit(1)
+            raise RuntimeError(f"API key not found at {API_KEY_FILE}")
         
         # Create public service with API key
         public_service = build("youtube", "v3", developerKey=api_key)
@@ -176,8 +181,9 @@ class YouTubeClient:
         self.add_quota_cost(QUOTA_CHANNEL_LIST)
         
         if not channel_response.get('items'):
-            print("⚠️  Channel not found!")
-            return []
+            raise RuntimeError(
+                f"Channel '{channel_id}' not found or not accessible with the provided API key"
+            )
         
         uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
         

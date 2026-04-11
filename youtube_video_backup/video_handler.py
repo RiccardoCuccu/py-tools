@@ -27,6 +27,60 @@ QUOTA_THUMBNAIL_UPLOAD = 50
 # Quality constraints
 MIN_NATIVE_HEIGHT = 1080  # Minimum resolution for "native quality"
 
+# Prefixes forwarded from the yt-dlp logger to stdout
+_YTDLP_INFO_PREFIXES = ('[info]', '[youtube]', '[Merger]', '[ffmpeg]')
+
+
+class _YtdlpLogger:
+    """Routes yt-dlp log output through our own formatting.
+
+    Progress is handled separately via progress_hooks, so this logger only
+    forwards informational lines and suppresses raw ERROR output (exceptions
+    are caught and formatted by the caller instead).
+    """
+
+    def debug(self, msg):
+        """Forward extraction/merge info; drop progress and debug noise."""
+        if any(msg.startswith(p) for p in _YTDLP_INFO_PREFIXES):
+            print(msg)
+
+    def info(self, msg):
+        """Forward informational lines."""
+        print(msg)
+
+    def warning(self, _msg):
+        """Suppress - caller handles warnings via exception."""
+
+    def error(self, _msg):
+        """Suppress raw error lines - caller catches the exception instead."""
+
+
+def _progress_hook(d):
+    """Render download progress on a single updating line.
+
+    Called by yt-dlp for each progress event. Overwrites the current line
+    in place so the terminal is not flooded regardless of chunk size.
+    """
+    status = d.get('status')
+    if status == 'downloading':
+        downloaded = d.get('downloaded_bytes') or 0
+        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+        speed = d.get('speed') or 0
+        eta = d.get('eta')
+
+        pct_str = f"{downloaded / total * 100:5.1f}%" if total else "  ...%"
+        total_str = f"{total / 1024 / 1024:.2f}MiB" if total else "?"
+        speed_str = f"{speed / 1024 / 1024:.2f}MiB/s" if speed else "Unknown B/s"
+        if eta is not None:
+            eta_str = f"{int(eta) // 3600:02d}:{int(eta) % 3600 // 60:02d}:{int(eta) % 60:02d}"
+        else:
+            eta_str = "Unknown"
+
+        print(f"\r   [download] {pct_str} of {total_str} at {speed_str} ETA {eta_str}   ", end='', flush=True)
+    elif status == 'finished':
+        # Move past the progress line; yt-dlp will print the merge step next
+        print()
+
 
 class VideoDownloader:
     """Manages video downloads with yt-dlp"""
@@ -35,9 +89,10 @@ class VideoDownloader:
     VIDEO_EXTENSIONS = ['mp4', 'webm', 'mkv', 'mov']
     THUMBNAIL_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
     
-    def __init__(self, config):
+    def __init__(self, config, logger):
         """Initialise the video downloader with the active configuration."""
         self.config = config
+        self.logger = logger
 
     @staticmethod
     def _find_file_with_extensions(base_path, extensions):
@@ -146,8 +201,12 @@ class VideoDownloader:
         return {}
     
     def _log_download_error(self, reason):
-        """Log download error with consistent formatting"""
-        print(f"\n   ❌ Download failed: {reason}")
+        """Log download error with consistent formatting."""
+        # yt-dlp sometimes double-prefixes exceptions with "ERROR: ERROR: ..."
+        cleaned = reason.strip()
+        while cleaned.upper().startswith("ERROR:"):
+            cleaned = cleaned[len("ERROR:"):].strip()
+        self.logger.log_error(f"Download failed: {cleaned}")
 
     def _list_available_formats(self, video_url):
         """List all available formats for a video and let user choose"""
@@ -295,7 +354,7 @@ class VideoDownloader:
             print(f"   ❌ Error retrieving formats: {e}")
             return None
     
-    def download(self, video_url, output_dir, custom_format=None):
+    def download(self, video_url, output_dir, custom_format=None, _cookies_disabled=False):
         """Download video with yt-dlp
 
         Args:
@@ -386,7 +445,13 @@ class VideoDownloader:
             'socket_timeout': self.config.socket_timeout,
             'retries': self.config.download_retries,
             'fragment_retries': self.config.fragment_retries,
+            'http_chunk_size': self.config.http_chunk_size,
+            'logger': _YtdlpLogger(),
+            'noprogress': True,
+            'progress_hooks': [_progress_hook],
         }
+        if self.config.cookies_from_browser and not _cookies_disabled:
+            ydl_opts['cookiesfrombrowser'] = (self.config.cookies_from_browser, None, None, None)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
@@ -419,7 +484,23 @@ class VideoDownloader:
 
         except Exception as e:
             error_str = str(e)
+
+            # Chrome cookie DB locked (browser is open on Windows) - retry without cookies
+            if "Could not copy" in error_str and "cookie" in error_str.lower():
+                print(f"\n⚠️  Chrome cookie database is locked (close Chrome and rerun to use cookies).")
+                print(f"   Retrying without cookies...")
+                return self.download(video_url, output_dir, custom_format=custom_format, _cookies_disabled=True)
+
             self._log_download_error(error_str)
+
+            # Check if error is bot detection
+            if "Sign in to confirm" in error_str or "not a bot" in error_str:
+                print(f"\n⚠️  YouTube bot detection triggered.")
+                if not self.config.cookies_from_browser:
+                    print(f"   Set COOKIES_FROM_BROWSER = \"chrome\" in config.py to bypass this.")
+                else:
+                    print(f"   Close {self.config.cookies_from_browser} completely and retry - the cookie DB is locked while the browser is open.")
+                return self._create_result()
 
             # Check if error is about unavailable format
             if "Requested format is not available" in error_str:
