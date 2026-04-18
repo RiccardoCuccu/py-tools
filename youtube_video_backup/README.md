@@ -14,10 +14,27 @@
 
 ## Usage
 ```
+# Basic run - interactive prompts for each decision
 python main.py
+
+# Fully automated run - no prompts, use cached data, ignore quota warnings
+python main.py --auto-confirm --use-cache --ignore-quota-warning
+
+# Automated run that forces a fresh channel fetch
+python main.py --auto-confirm --re-fetch --ignore-quota-warning
+
+# Skip per-video confirmation only, still ask about cache and quota
+python main.py --auto-confirm
 ```
 
 On the first run, the script will guide you through initial setup, asking for source and destination channel IDs.
+
+### Options
+
+- `-y`, `--auto-confirm` - Skip the per-video backup confirmation prompt and always proceed
+- `--use-cache` - Use cached channel data when available (no API cost); mutually exclusive with `--re-fetch`
+- `--re-fetch` - Ignore cached channel data and re-fetch the full video list from the channel; mutually exclusive with `--use-cache`
+- `--ignore-quota-warning` - Automatically continue when daily API quota may be insufficient, skipping the confirmation prompt
 
 ## Installation
 

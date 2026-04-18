@@ -7,8 +7,24 @@ re-uploads to a secondary channel as private. Resumes from the last checkpoint.
 
 Usage:
     python main.py
+    python main.py --auto-confirm
+    python main.py --use-cache
+    python main.py --re-fetch
+    python main.py --ignore-quota-warning
+
+    # Fully automated run - no prompts, use cached data, ignore quota warnings
+    python main.py --auto-confirm --use-cache --ignore-quota-warning
+
+    # Automated run that forces a fresh channel fetch
+    python main.py --auto-confirm --re-fetch --ignore-quota-warning
+
+Notes:
+    - --use-cache and --re-fetch are mutually exclusive.
+    - --auto-confirm skips the per-video backup confirmation prompt.
+    - --ignore-quota-warning skips the quota-insufficient warning prompt.
 """
 
+import argparse
 import os
 import sys
 import time
@@ -22,6 +38,43 @@ from utils import StorageManager, Logger, safe_remove_files
 # Video processing constants
 VIDEOS_PER_API_PAGE = 50
 ESTIMATED_COST_PER_VIDEO = QUOTA_VIDEO_UPLOAD + QUOTA_THUMBNAIL_UPLOAD  # Upload + thumbnail
+
+
+def _parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Download videos from a YouTube channel and re-upload them to a backup channel."
+        )
+    )
+    parser.add_argument(
+        "--auto-confirm", "-y",
+        action="store_true",
+        help="Skip the per-video backup confirmation prompt and always proceed.",
+    )
+    parser.add_argument(
+        "--ignore-quota-warning",
+        action="store_true",
+        default=False,
+        help=(
+            "Automatically continue when daily API quota may be insufficient, "
+            "skipping the 'Continue anyway?' prompt."
+        ),
+    )
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "--use-cache",
+        action="store_true",
+        default=False,
+        help="Use cached channel data when available (no API cost).",
+    )
+    cache_group.add_argument(
+        "--re-fetch",
+        action="store_true",
+        default=False,
+        help="Ignore cached channel data and re-fetch from the channel.",
+    )
+    return parser.parse_args()
 
 
 def _run_download(downloader, video, config, logger, last_upload_time):
@@ -193,20 +246,25 @@ def ask_retry_operation(operation_type="operation", auto_confirm=False):
 
 def main():
     """Main execution function"""
-    
+    args = _parse_args()
+
     print("╔═══════════════════════════════════════╗")
     print("║    YouTube Automatic Backup Script    ║")
     print("╚═══════════════════════════════════════╝\n")
-    
+
     # Validate config before any side effects
     validate_configuration()
 
     # First run setup
     if not first_run_setup():
         sys.exit(1)
-    
+
     # Load configuration
     config = Config.load()
+
+    # CLI flags override config.py values
+    if args.auto_confirm:
+        config.auto_confirm = True
     
     # Initialize components (StorageManager first!)
     storage = StorageManager(config)
@@ -248,7 +306,13 @@ def main():
         print(f"  1. Use cached data (recommended - no API cost)")
         print(f"  2. Re-fetch videos from channel (costs API quota if using full backup)")
         
-        if not config.auto_confirm:
+        if args.use_cache:
+            use_cache = True
+            print("\n✓ Using cached data (--use-cache flag)")
+        elif args.re_fetch:
+            use_cache = False
+            print("\n✓ Re-fetching from channel (--re-fetch flag)")
+        elif not config.auto_confirm:
             response = input("\nUse cache? (1/2): ").strip()
             use_cache = response == '1'
         else:
@@ -281,10 +345,13 @@ def main():
                 print(f"   Need ~{estimated_cost} units, have {remaining} units")
                 print(f"   Quota resets at midnight Pacific Time")
                 
-                response = input("\n   Continue anyway? (y/n): ").lower()
-                if response != 'y':
-                    print("Operation cancelled by user")
-                    return
+                if not args.ignore_quota_warning:
+                    response = input("\n   Continue anyway? (y/n): ").lower()
+                    if response != 'y':
+                        print("Operation cancelled by user")
+                        return
+                else:
+                    print("\n✓ Continuing despite quota warning (--ignore-quota-warning)")
         
         if use_full_backup:
             print(f"\n{'='*60}")
@@ -455,9 +522,6 @@ def main():
         state["last_backup_date"] = datetime.now().isoformat()
         storage.save_state(state)
 
-        if interruption_reason:
-            break
-    
     # Mark full backup as completed if we processed all videos
     if use_full_backup and videos_backed_up == len(videos_to_backup):
         state["full_backup_completed"] = True
