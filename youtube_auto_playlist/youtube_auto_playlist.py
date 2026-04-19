@@ -1,19 +1,30 @@
-import os
+#!/usr/bin/env python3
+"""
+YouTube Subscription Auto Playlist - Monitor YouTube subscriptions and add new videos to a playlist automatically.
+
+Polls subscribed channels at a configurable interval, detects videos published since
+the last run, and adds them to a target YouTube playlist via the Data API v3.
+
+Usage:
+    python youtube_auto_playlist.py
+"""
+
 import json
-import yaml
+import os
 import time
-import xml.etree.ElementTree as ET
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
+
 import pytz
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+import yaml
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
-# =====================================
-# GENERAL CONFIGURATION - EDIT THESE VALUES
-# =====================================
+# General configuration (edit these values)
 
 # Script Behavior
 POLL_INTERVAL_MINUTES = 60                              # How often to check for new videos (1 hours to save quota)
@@ -43,21 +54,19 @@ SUBSCRIPTIONS_CACHE_FILE = "subscriptions_cache.json"   # Cached subscriptions l
 # Caching Settings
 CACHE_SUBSCRIPTIONS_HOURS = 24                          # How long to cache subscriptions list (in hours)
 
-# =====================================
-# TECHNICAL CONFIGURATION (DO NOT EDIT)
-# =====================================
+# Technical configuration (do not edit)
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 POLL_INTERVAL_SECONDS = POLL_INTERVAL_MINUTES * 60
 RETRY_DELAY_SECONDS = RETRY_DELAY_MINUTES * 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+FEED_FETCH_TIMEOUT_SECONDS = 10
 
 # Pacific Time timezone (handles PST/PDT automatically)
 PACIFIC_TZ = pytz.timezone('US/Pacific')
 
-# Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Create config directory path
 CONFIG_DIR = os.path.join(SCRIPT_DIR, CONFIG_DIR)
 
 # Make all file paths relative to config directory
@@ -72,10 +81,6 @@ SUBSCRIPTIONS_CACHE_FILE = os.path.join(CONFIG_DIR, SUBSCRIPTIONS_CACHE_FILE)
 quota_used = 0
 
 
-# =====================================
-# CACHING UTILITIES
-# =====================================
-
 def load_subscriptions_cache():
     """Load cached subscriptions list"""
     if not os.path.exists(SUBSCRIPTIONS_CACHE_FILE):
@@ -88,7 +93,7 @@ def load_subscriptions_cache():
         # Check if cache is still valid
         cached_time = datetime.fromisoformat(cache_data["cached_at"])
         now = datetime.now(timezone.utc)
-        age_hours = (now - cached_time).total_seconds() / 3600
+        age_hours = (now - cached_time).total_seconds() / SECONDS_PER_HOUR
         
         if age_hours < CACHE_SUBSCRIPTIONS_HOURS:
             print(f"✓ Using cached subscriptions (age: {age_hours:.1f} hours)")
@@ -116,10 +121,6 @@ def save_subscriptions_cache(subscriptions, etag=None):
     print(f"✓ Subscriptions cached")
 
 
-# =====================================
-# LOGGING UTILITIES
-# =====================================
-
 def log_added_video(video_id, video_title, channel_title):
     """Log added video to file and print compact one-line format"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -132,10 +133,6 @@ def log_added_video(video_id, video_title, channel_title):
     print(f"  ✓ {video_title} - {video_url}")
 
 
-# =====================================
-# FIRST RUN SETUP
-# =====================================
-
 def create_default_config():
     """Create a default config.yaml file with placeholders"""
     default_config = {
@@ -144,9 +141,9 @@ def create_default_config():
         }
     }
     
-    with open(CONFIG_FILE, "w") as file:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as file:
         yaml.dump(default_config, file, default_flow_style=False, sort_keys=False)
-    
+
     print(f"✓ Created {CONFIG_FILE}")
     return default_config
 
@@ -283,7 +280,7 @@ def first_run_setup():
     
     # Save config if updated
     if config_updated:
-        with open(CONFIG_FILE, "w") as file:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as file:
             yaml.dump(config, file, default_flow_style=False, sort_keys=False)
         print(f"✓ Configuration saved to {CONFIG_FILE}\n")
     
@@ -356,14 +353,11 @@ def first_run_setup():
     return True
 
 
-# =====================================
-# CONFIG & STATE UTILITIES
-# =====================================
-
-def load_config():
+def load_config() -> Dict[str, Any]:
     """Load user configuration from config.yaml"""
-    with open(CONFIG_FILE, "r") as file:
-        return yaml.safe_load(file)
+    with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+        raw = yaml.safe_load(file)
+        return raw if isinstance(raw, dict) else {}
 
 
 def load_state():
@@ -375,7 +369,7 @@ def load_state():
             "quota_used_today": 0,
             "quota_reset_date": datetime.now(PACIFIC_TZ).date().isoformat()
         }
-    with open(STATE_FILE, "r") as file:
+    with open(STATE_FILE, "r", encoding="utf-8") as file:
         state = json.load(file)
         # Ensure quota fields exist for backward compatibility
         if "quota_used_today" not in state:
@@ -387,13 +381,9 @@ def load_state():
 
 def save_state(state):
     """Persist state locally"""
-    with open(STATE_FILE, "w") as file:
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
         json.dump(state, file, indent=2)
 
-
-# =====================================
-# AUTHENTICATION
-# =====================================
 
 def authenticate():
     """Authenticate user via OAuth2 and return YouTube service"""
@@ -457,15 +447,11 @@ def authenticate():
                 print("\n\nAuthentication cancelled by user")
                 exit(0)
 
-        with open(TOKEN_FILE, "w") as token_file:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token_file:
             token_file.write(credentials.to_json())
 
     return build("youtube", "v3", credentials=credentials)
 
-
-# =====================================
-# QUOTA TRACKING UTILITIES
-# =====================================
 
 def add_quota_cost(cost):
     """Track API quota usage"""
@@ -492,10 +478,6 @@ def reset_quota_if_new_day(state):
     return False
 
 
-# =====================================
-# KEYWORD FILTERING UTILITIES
-# =====================================
-
 def matches_keyword_filter(title):
     """Check if video title matches keyword filter rules"""
     if not ENABLE_KEYWORD_FILTER or not FILTER_KEYWORDS:
@@ -513,10 +495,6 @@ def matches_keyword_filter(title):
         # Invalid mode, default to accepting all
         return True
 
-
-# =====================================
-# YOUTUBE API LOGIC
-# =====================================
 
 def get_all_subscriptions(youtube_service):
     """Get all channel IDs from user's subscriptions with caching and ETag support"""
@@ -568,7 +546,7 @@ def get_recent_videos_from_channel_rss(youtube_service, channel_id, published_af
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
-        with urllib.request.urlopen(feed_url, timeout=10) as response:
+        with urllib.request.urlopen(feed_url, timeout=FEED_FETCH_TIMEOUT_SECONDS) as response:
             xml_data = response.read()
         
         # Parse XML
@@ -740,7 +718,7 @@ def parse_duration(duration_str):
     minutes = int(match.group(2) or 0)
     seconds = int(match.group(3) or 0)
     
-    return hours * 3600 + minutes * 60 + seconds
+    return hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
 
 
 def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
@@ -768,10 +746,6 @@ def add_video_to_playlist(youtube_service, target_playlist_id, video_id):
         print(f"  ⚠ Failed to add video: {e}")
         return False
 
-
-# =====================================
-# MAIN EXECUTION LOGIC
-# =====================================
 
 def run():
     """Main execution function for checking and adding videos"""
@@ -898,10 +872,6 @@ def run():
     print(f"Estimated remaining daily quota: {remaining_quota} / {daily_quota_limit} units")
     print(f"{'='*60}\n")
 
-
-# =====================================
-# ENTRY POINT
-# =====================================
 
 if __name__ == "__main__":
     # Check first-run setup
