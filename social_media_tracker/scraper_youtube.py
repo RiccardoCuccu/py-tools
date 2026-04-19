@@ -1,13 +1,13 @@
+#!/usr/bin/env python3
 """
 YouTube Subscriber Scraper using yt-dlp
 Extracts subscriber count from YouTube channel URLs using yt-dlp
 No API key required - completely free and unlimited
 """
 
-import time
 import os
+import time
 from typing import Optional, Dict
-from urllib.parse import urlparse
 
 try:
     from yt_dlp import YoutubeDL  # type: ignore

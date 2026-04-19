@@ -1,15 +1,17 @@
+#!/usr/bin/env python3
 """
 Threads Follower Scraper
 Extracts follower count from Threads profile URLs by parsing hidden JSON data
 """
 
 import json
+import os
 import re
 import time
-import os
-import requests
 from typing import Optional, Dict
 from urllib.parse import urlparse
+
+import requests
 
 def extract_username(url: str) -> str:
     """Extract username from Threads URL"""

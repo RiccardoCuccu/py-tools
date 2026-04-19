@@ -1,3 +1,6 @@
 requests
 schedule
 openpyxl
+selenium
+webdriver-manager
+yt-dlp

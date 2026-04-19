@@ -1,31 +1,39 @@
-# Social Media Follower Tracker
+# Social Media Tracker
 
-**Purpose:** `social_media_tracker.py` is a tool designed to automatically track follower counts across Instagram, Threads and YouTube on a configurable schedule. The script runs continuously and checks follower numbers on the last day of each month (or daily/weekly) at a specified time, logging all data to an Excel file with historical tracking and change calculations.
+**Purpose:** `social_media_tracker` is a tool that automatically tracks follower counts across Instagram, Threads, and YouTube on a configurable schedule, appending results to an Excel file with historical tracking and change calculations.
 
 ## How it Works
 
-- The script loads configuration from `social_profiles.json` with platform URLs and schedule settings.
+- The tool loads platform URLs and schedule settings from `social_profiles.json`.
 - It runs continuously in the background, checking the schedule every minute.
-- When the scheduled time arrives (daily, monthly or weekly), it collects follower counts from all enabled platforms.
-- Follower data is scraped from public profile pages without requiring authentication.
-- Each platform's data is saved to its own worksheet in an Excel file with date, time, username, followers, and change from previous check.
-- The script includes retry logic to handle temporary failures and rate limiting.
+- When the scheduled time arrives (daily, weekly, or monthly), it collects follower counts from all enabled platforms.
+- Instagram is scraped via headless Chrome (Selenium) using the public `span[title]` element - no login required.
+- Threads is scraped via HTTP requests by parsing embedded JSON in the profile page.
+- YouTube subscriber counts are fetched via yt-dlp without requiring an API key.
+- Each platform's data is saved to its own worksheet in an Excel file with date, time, username, follower count, and change from the previous check.
 - Color-coded change indicators (green for growth, red for decline) make trends easy to spot.
+- All platforms include retry logic to handle transient failures and rate limiting.
 
 ## Usage
 
 ```
-python social_media_tracker.py
+python main.py
 ```
 
-On the first run, the script will create a default `social_profiles.json` configuration file to update.
+On the first run, a default `social_profiles.json` is created. Edit it to add your profile URLs and enable the platforms you want to track.
 
 ## Installation
 
-To use `social_media_tracker.py`, you'll need to install the following Python libraries:
-
 ```
-pip install requests schedule openpyxl instaloader yt-dlp
+pip install requests schedule openpyxl selenium webdriver-manager yt-dlp
 ```
 
-If you don't need Instagram tracking, you can skip installing `instaloader`. The script will automatically disable Instagram tracking and continue working for YouTube.
+A virtual environment is recommended:
+
+```
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python main.py
+```
+
+Chrome must be installed on the system for Instagram scraping (Selenium uses it in headless mode). `webdriver-manager` downloads the matching ChromeDriver automatically.
