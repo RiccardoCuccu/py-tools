@@ -442,7 +442,7 @@ def authenticate():
                     CLIENT_SECRET_FILE,
                     SCOPES
                 )
-                credentials = flow.run_local_server(port=0)
+                credentials = flow.run_local_server(port=8080, open_browser=False)
             except KeyboardInterrupt:
                 print("\n\nAuthentication cancelled by user")
                 exit(0)
