@@ -27,3 +27,13 @@ To use `youtube_auto_playlist.py`, you'll need to install the following Python l
 pip install google-api-python-client google-auth google-auth-oauthlib pyyaml pytz
 
 ```
+
+## Tests
+
+The `tests/` folder covers the deduplication helper that keeps the same video from being added to the playlist twice, plus the state file load and save round trip.
+
+```
+pip install -r requirements-dev.txt
+pytest tests -v
+
+```

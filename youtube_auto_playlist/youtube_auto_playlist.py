@@ -15,7 +15,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List
 
 import pytz
 import yaml
@@ -29,6 +29,7 @@ from googleapiclient.discovery import build
 # Script Behavior
 POLL_INTERVAL_MINUTES = 60                              # How often to check for new videos (1 hours to save quota)
 MAX_VIDEOS_PER_CHANNEL = 5                              # Max videos to check per channel each time
+MAX_PROCESSED_VIDEOS = 5000                             # Max video IDs retained in state to prevent file growth
 RETRY_DELAY_MINUTES = 60                                # Wait time after errors before retry (1 hour for quota errors)
 INCLUDE_SHORTS = False                                  # Set to True to include YouTube Shorts, False to exclude them
                                                         # Note: Filtering shorts costs +1 API unit per channel (to check video durations)
@@ -383,6 +384,14 @@ def save_state(state):
     """Persist state locally"""
     with open(STATE_FILE, "w", encoding="utf-8") as file:
         json.dump(state, file, indent=2)
+
+
+def trim_processed_videos(video_ids: Iterable[str], limit: int = MAX_PROCESSED_VIDEOS) -> List[str]:
+    """Deduplicate video IDs preserving insertion order, keeping only the most recent `limit` entries."""
+    if limit <= 0:
+        return []
+    unique_ids = list(dict.fromkeys(video_ids))
+    return unique_ids[-limit:]
 
 
 def authenticate():
@@ -795,7 +804,8 @@ def run():
     subscriptions.sort(key=lambda x: x["channel_title"].lower())
     
     # Track processed videos in this run
-    processed_videos = set(state.get("processed_videos", []))
+    # dict preserves insertion order and gives O(1) membership, unlike set
+    processed_videos: Dict[str, None] = dict.fromkeys(state.get("processed_videos", []))
     videos_added_count = 0
     
     # Track if any errors occurred during processing
@@ -835,7 +845,7 @@ def run():
                 # Add video to playlist
                 if add_video_to_playlist(youtube_service, target_playlist_id, video_id):
                     log_added_video(video_id, video["title"], video["channel_title"])
-                    processed_videos.add(video_id)
+                    processed_videos[video_id] = None
                     videos_added_count += 1
                 else:
                     processing_error = True
@@ -852,7 +862,7 @@ def run():
         print(f"  Videos will be rechecked in the next cycle")
     
     # Always update processed videos list and quota
-    state["processed_videos"] = list(processed_videos)[-1000:]  # Keep last 1000 to prevent file growth
+    state["processed_videos"] = trim_processed_videos(processed_videos)
     state["quota_used_today"] = quota_used
     save_state(state)
     
