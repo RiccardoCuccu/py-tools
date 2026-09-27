@@ -34,7 +34,8 @@ class SimilarityAnalyzer:
         results = []
         
         for i, source in enumerate(sources, 1):
-            print(f"  Analyzing source {i}/{len(sources)}...")
+            location = source['file_path'] if source.get('is_local', False) else source['url']
+            print(f"  Analyzing source {i}/{len(sources)}: {location}")
             
             # Calculate overall document similarity
             overall_similarity = self._calculate_similarity(doc_text, source['content'])
@@ -113,7 +114,7 @@ class SimilarityAnalyzer:
             print(f"    Warning: Segment matching failed: {e}")
             return []
     
-    def generate_report(self, results, doc_text, failed_sources=None, num_local_sources=0):
+    def generate_report(self, results, doc_text, failed_sources=None, num_local_sources=0, downloaded_sources=None):
         """Generate and save detailed plagiarism report"""
         local_results = [r for r in results if r.get('is_local', False)]
         online_results = [r for r in results if not r.get('is_local', False)]
@@ -195,6 +196,18 @@ class SimilarityAnalyzer:
                             report_lines.append(f"    Source:   \"{match['source_text'][:150]}...\"")
 
                     report_lines.append("\n" + "-" * 80)
+
+        # Downloaded sources section (all online sources fetched, before the similarity filter)
+        if downloaded_sources:
+            report_lines.append("\n" + "=" * 80)
+            report_lines.append("DOWNLOADED SOURCES")
+            report_lines.append("=" * 80)
+
+            for i, source in enumerate(downloaded_sources, 1):
+                report_lines.append(f"\nDOWNLOADED SOURCE #{i}")
+                report_lines.append(f"  URL: {source.get('url', 'N/A')}")
+                report_lines.append(f"  Title: {source.get('title', 'Unknown')}")
+                report_lines.append("-" * 80)
 
         # Failed downloads section
         if failed_sources:

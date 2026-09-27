@@ -75,6 +75,7 @@ class ContentDownloader:
                     'content': content,
                     'title': self._extract_title(content)
                 })
+                print(f"    ✓ Downloaded: {url}")
             else:
                 reason = error if error else "Content too short or corrupted (< 200 readable characters)"
                 failed_sources.append({
@@ -202,7 +203,7 @@ class ContentDownloader:
                         content_parts.append(f"Abstract: {summary.text.strip()}")
                     
                     if content_parts:
-                        print(f"    ✓ Fetched from arXiv API")
+                        print(f"    ✓ Fetched from arXiv API: {api_url}")
                         return "\n\n".join(content_parts)
         except Exception as e:
             print(f"    arXiv API failed: {str(e)}")
@@ -237,16 +238,16 @@ class ContentDownloader:
                         if pdf_url:
                             content = self._download_pdf_as_text(pdf_url)
                             if content:
-                                print(f"    ✓ Fetched open access PDF via Unpaywall")
+                                print(f"    ✓ Fetched open access PDF via Unpaywall: {pdf_url}")
                                 return content
-                        
+
                         # Try landing page
                         if landing_url:
                             content = self._method_desktop(landing_url, 15)
                             if content:
-                                print(f"    ✓ Fetched via Unpaywall redirect")
+                                print(f"    ✓ Fetched via Unpaywall redirect: {landing_url}")
                                 return content
-                
+
                 # Fallback: get title and abstract from metadata
                 title = data.get('title', '')
                 abstract = data.get('abstract', '')
@@ -257,7 +258,7 @@ class ContentDownloader:
                     if abstract:
                         content_parts.append(f"Abstract: {abstract}")
                     if content_parts:
-                        print(f"    ✓ Fetched metadata via Unpaywall")
+                        print(f"    ✓ Fetched metadata via Unpaywall: {unpaywall_url}")
                         return "\n\n".join(content_parts)
         except Exception as e:
             print(f"    Unpaywall API failed: {str(e)}")
@@ -289,7 +290,7 @@ class ContentDownloader:
                     content_parts.append(f"Abstract: {abstract}")
                 
                 if content_parts:
-                    print(f"    ✓ Fetched from Semantic Scholar API")
+                    print(f"    ✓ Fetched from Semantic Scholar API: {api_url}")
                     return "\n\n".join(content_parts)
         except Exception as e:
             print(f"    Semantic Scholar API failed: {str(e)}")

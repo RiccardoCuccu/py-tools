@@ -177,7 +177,7 @@ class PlagiarismChecker:
 
         # STEP 5: Analyze similarity and generate report
         results = self.analyzer.analyze_sources(doc_text, combined_sources)
-        self.analyzer.generate_report(results, doc_text, download_failures, len(local_sources))
+        self.analyzer.generate_report(results, doc_text, download_failures, len(local_sources), online_sources)
 
 
 # Command line interface
