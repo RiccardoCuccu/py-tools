@@ -49,11 +49,15 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-import pillow_heif
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pillow_heif = None
+
 from PIL import Image
 from PIL.ExifTags import TAGS
-
-pillow_heif.register_heif_opener()
 
 IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic", ".heif", ".webp", ".gif", ".dng"}
@@ -156,6 +160,9 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
     """
     Return a flat dict of {atom_name: (data_offset, data_size)} for atoms
     found between *offset* and *end* in the open file handle *fh*.
+
+    Handles 64-bit extended atom sizes (size == 1 → read uint64 from next
+    8 bytes) used by large mdat atoms in MP4 files from Samsung etc.
     """
     import struct
     atoms: dict = {}
@@ -170,55 +177,238 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
             name_str = name.decode("latin-1")
         except ValueError:
             break
-        if size < 8:
+        if size == 1:
+            # 64-bit extended size: next 8 bytes are the real size
+            ext = fh.read(8)
+            if len(ext) < 8:
+                break
+            size = struct.unpack(">Q", ext)[0]  # unsigned long long
+            header_len = 16  # 4 B size=1 + 4 B name + 8 B extended
+        else:
+            header_len = 8
+        if size < header_len:
             break
-        atoms[name_str] = (pos + 8, size - 8)
+        atoms[name_str] = (pos + header_len, size - header_len)
         pos += size
     return atoms
 
 
+def _resolve_keys_atom(fh: "BinaryIO", keys_atom: tuple[int, int]) -> dict[int, str]:  # type: ignore[name-defined]
+    """
+    Parse a QuickTime 'keys' metadata atom and return a mapping
+    from numeric ilst index → full key name (e.g. {2: 'com.apple.quicktime.make'}).
+
+    The keys atom layout:
+        4 B  version/flags
+        4 B  entry count
+        For each entry:
+            4 B  total entry size
+            4 B  namespace ('mdta')
+            UTF-8 key string, NOT null-terminated per spec (the entry size
+            already accounts for the exact key length), though a trailing
+            null byte is tolerated if present.
+    """
+    import struct
+
+    offset, size = keys_atom
+    fh.seek(offset)
+    raw = fh.read(size)
+    pos = 4                          # skip version/flags
+    if pos + 4 > len(raw):
+        return {}
+    count = struct.unpack(">I", raw[pos : pos + 4])[0]
+    pos += 4
+
+    mapping: dict[int, str] = {}
+    for idx in range(1, count + 1):
+        if pos + 4 > len(raw):
+            break
+        entry_size = struct.unpack(">I", raw[pos : pos + 4])[0]
+        pos += 4
+        if pos + 4 > len(raw) or entry_size < 8:
+            break
+        pos += 4  # skip namespace (always 'mdta' in practice)
+        # Key string is not null-terminated per spec, but tolerate one if present
+        entry_end = min(pos + (entry_size - 8), len(raw))
+        null_pos = raw.find(b"\0", pos, entry_end)
+        if null_pos < 0:
+            value = raw[pos:entry_end].decode("utf-8", errors="ignore")
+        else:
+            value = raw[pos:null_pos].decode("utf-8", errors="ignore")
+        if value:
+            mapping[idx] = value
+        pos = entry_end
+
+    return mapping
+
+
 def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # type: ignore[name-defined]
     """
-    Walk the moov → udta → meta → ilst atom tree looking for
-    '©mod' (model) and '©mak' (make) values.
+    Walk the moov atom tree looking for '©mod' (model) and '©mak' (make) values.
+
+    Tries multiple metadata layouts:
+      - moov → udta → ©mod / ©mak (direct)
+      - moov → udta → meta → keys + ilst → ©mod / ©mak
+      - moov → meta → keys + ilst → ©mod / ©mak  (iPhone MOV layout)
     """
     make = ""
     model = ""
+
+    import struct
 
     moov = top_atoms.get("moov")
     if not moov:
         return make, model
     moov_atoms = _read_atoms(fh, moov[0], moov[0] + moov[1])
 
+    def _lookup_in_ilst(ilst_atom: tuple[int, int], keys_mapping: dict[int, str]) -> None:
+        nonlocal make, model
+        ilst_atoms = _read_atoms(fh, ilst_atom[0], ilst_atom[0] + ilst_atom[1])
+
+        # Path A: standard string keys '©mod' / '©mak'
+        for key, target in (("©mod", "model"), ("©mak", "make")):
+            if key in ilst_atoms:
+                value = _read_string_atom(fh, ilst_atoms[key])
+                if target == "model":
+                    model = value
+                else:
+                    make = value
+
+        # Path B: numeric indices resolved via the keys atom
+        if keys_mapping and (not make or not model):
+            for ilst_key_str, ilst_val in ilst_atoms.items():
+                try:
+                    key_idx = struct.unpack(">I", ilst_key_str.encode("latin-1"))[0]
+                except (ValueError, struct.error):
+                    continue
+                name = keys_mapping.get(key_idx, "")
+                if not name:
+                    continue
+                value = _read_string_atom(fh, ilst_val)
+                if "quicktime.make" in name or name.endswith(".make"):
+                    make = value
+                elif "quicktime.model" in name or name.endswith(".model"):
+                    model = value
+
+    def _resolve_keys_from_meta(meta_atoms: dict) -> dict[int, str]:
+        keys = meta_atoms.get("keys")
+        if keys:
+            return _resolve_keys_atom(fh, keys)
+        return {}
+
+    # --- Path 1 & 2: metadata nested under udta ---
     udta = moov_atoms.get("udta")
-    if not udta:
-        return make, model
-    udta_atoms = _read_atoms(fh, udta[0], udta[0] + udta[1])
+    if udta:
+        udta_atoms = _read_atoms(fh, udta[0], udta[0] + udta[1])
 
-    # Some cameras write ©mod / ©mak directly under udta
-    for key, target in (("©mod", "model"), ("©mak", "make")):
-        if key in udta_atoms:
-            value = _read_string_atom(fh, udta_atoms[key])
-            if target == "model":
-                model = value
-            else:
-                make = value
+        # Direct children of udta
+        for key, target in (("©mod", "model"), ("©mak", "make")):
+            if key in udta_atoms:
+                value = _read_string_atom(fh, udta_atoms[key])
+                if target == "model":
+                    model = value
+                else:
+                    make = value
 
-    # Others nest them inside meta → ilst
-    meta = udta_atoms.get("meta")
-    if meta:
-        # meta has a 4-byte version/flags header before its children
-        meta_atoms = _read_atoms(fh, meta[0] + 4, meta[0] + meta[1])
-        ilst = meta_atoms.get("ilst")
-        if ilst:
-            ilst_atoms = _read_atoms(fh, ilst[0], ilst[0] + ilst[1])
-            for key, target in (("©mod", "model"), ("©mak", "make")):
-                if key in ilst_atoms:
-                    value = _read_string_atom(fh, ilst_atoms[key])
-                    if target == "model":
-                        model = value
-                    else:
-                        make = value
+        # meta → keys + ilst under udta (meta has 4-byte version/flags prefix)
+        meta = udta_atoms.get("meta")
+        if meta and (not make or not model):
+            meta_start = meta[0] + 4   # skip version/flags
+            meta_end = meta[0] + meta[1]
+            meta_atoms = _read_atoms(fh, meta_start, meta_end)
+            ilst = meta_atoms.get("ilst")
+            if ilst:
+                keys_mapping = _resolve_keys_from_meta(meta_atoms)
+                _lookup_in_ilst(ilst, keys_mapping)
+
+    # --- Path 3: moov → meta directly (iPhone MOV layout) ---
+    if not make and not model:
+        meta = moov_atoms.get("meta")
+        if meta:
+            meta_atoms = _read_atoms(fh, meta[0], meta[0] + meta[1])
+            ilst = meta_atoms.get("ilst")
+            if not ilst:
+                meta_atoms = _read_atoms(fh, meta[0] + 4, meta[0] + meta[1])
+                ilst = meta_atoms.get("ilst")
+            if ilst:
+                keys_mapping = _resolve_keys_from_meta(meta_atoms)
+                _lookup_in_ilst(ilst, keys_mapping)
+
+    # --- Path 4: Samsung/Android udta fallback ---
+    # Samsung MP4 files use a proprietary udta layout (auth, smta atoms)
+    # instead of the standard iTunes ©mod / ©mak.
+    if not make and not model:
+        udta = moov_atoms.get("udta")
+        if udta:
+            udta_atoms = _read_atoms(fh, udta[0], udta[0] + udta[1])
+
+            # 'auth' atom: 4-byte header + device display name
+            auth = udta_atoms.get("auth")
+            if auth:
+                fh.seek(auth[0] + 4)  # skip 4-byte version/flags header
+                data = fh.read(auth[1] - 4)
+                # 3GPP asset box: the header is followed by a 2-byte packed
+                # ISO-639-2 language code (1 pad bit = 0, then three 5-bit
+                # values each in 1..26, letter = value + 0x60), before the
+                # UTF-8 string. Skip it if present and well-formed; otherwise
+                # fall back to stripping leading non-printable bytes.
+                usable = data
+                if len(data) >= 2:
+                    packed = struct.unpack(">H", data[:2])[0]
+                    pad_bit = (packed >> 15) & 0x1
+                    c1 = (packed >> 10) & 0x1F
+                    c2 = (packed >> 5) & 0x1F
+                    c3 = packed & 0x1F
+                    if pad_bit == 0 and all(1 <= c <= 26 for c in (c1, c2, c3)):
+                        usable = data[2:]
+                if usable is data:
+                    # Skip leading non-printable bytes
+                    usable = data.lstrip(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08"
+                                    b"\x0b\x0c\x0e\x0f\x10\x11\x12\x13\x14"
+                                    b"\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
+                                    b"\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a"
+                                    b"\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95"
+                                    b"\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f"
+                                    b"\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa"
+                                    b"\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5"
+                                    b"\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf"
+                                    b"\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca"
+                                    b"\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5"
+                                    b"\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf"
+                                    b"\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea"
+                                    b"\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5"
+                                    b"\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff")
+                try:
+                    device_name = usable.decode("utf-8").rstrip("\x00").strip()
+                except UnicodeDecodeError:
+                    device_name = ""
+                if device_name:
+                    # Many Samsung auth strings are just the model name (e.g. "Galaxy S25")
+                    model = device_name
+
+            # 'smta' atom can supplement auth with the manufacturer prefix
+            smta = udta_atoms.get("smta")
+            if smta and (not make or not model):
+                fh.seek(smta[0])
+                smta_data = fh.read(smta[1])
+                # Search for known key=value patterns in the binary blob
+                for prefix in (b"mdln", b"make", b"manu"):
+                    idx = smta_data.find(prefix)
+                    if idx >= 0:
+                        after = smta_data[idx + len(prefix):]
+                        # Read until null byte or next non-printable char
+                        end = 0
+                        while end < len(after) and 0x20 <= after[end] < 0x7f:
+                            end += 1
+                        if end > 0:
+                            value = after[:end].decode("ascii")
+                            if prefix == b"mdln":
+                                model = model or value
+                                # Map Samsung model numbers (e.g. "SM-S931B" → "Galaxy S25")
+                                if model.startswith("SM-") and "Galaxy" not in model:
+                                    pass  # keep model as-is; user can rename folder later
+                            elif prefix in (b"make", b"manu"):
+                                make = make or value
 
     return make, model
 
@@ -271,7 +461,8 @@ def _sanitize_folder_name(name: str) -> str:
     unsafe = r'\/:*?"<>|'
     for ch in unsafe:
         result = result.replace(ch, "_")
-    return result.strip("_").replace(" ", "_")
+    result = result.strip("_").replace(" ", "_")
+    return result if result else FALLBACK_FOLDER
 
 
 def collect_media(source: Path, recursive: bool) -> list[Path]:
@@ -375,12 +566,26 @@ def execute_plan(
             dest_file = target_dir / src.name
             is_duplicate = False
 
-            # Skip files already inside their target directory so that re-running
-            # the script with --recursive on an already-organised folder is
-            # idempotent and does not route those files to duplicates/.
             if src.is_relative_to(target_dir):
                 processed += 1
-                _progress(processed, total, prefix=f"Files {'dry-run' if dry_run else ('copying' if copy else 'moving')}")
+                action_label = "dry-run" if dry_run else ("copying" if copy else "moving")
+                _progress(processed, total, prefix=f"Files {action_label}")
+
+                if ext_case:
+                    new_suffix = src.suffix.lower() if ext_case == "lower" else src.suffix.upper()
+                    if new_suffix != src.suffix:
+                        new_path = src.with_suffix(new_suffix)
+                        if dry_run:
+                            logger.debug("[DRY-RUN] %s  →  %s (ext-case rename)", new_path.name, target_dir)
+                        else:
+                            try:
+                                src.rename(new_path)
+                                logger.debug("%s  →  %s (ext-case rename)", src.name, new_path.name)
+                            except Exception as exc:
+                                logger.error("Failed to rename %s: %s", src.name, exc)
+                                files_skipped += 1
+                                continue
+
                 files_ok += 1
                 continue
 
@@ -422,13 +627,19 @@ def execute_plan(
                         new_suffix = dest_file.suffix.lower() if ext_case == "lower" else dest_file.suffix.upper()
                         if new_suffix != dest_file.suffix:
                             new_dest = dest_file.with_suffix(new_suffix)
-                            # On Windows, exists() returns True for case-only name differences
-                            # because the filesystem is case-insensitive. Allow the rename when
-                            # new_dest is merely a case variant of dest_file (not a real collision).
-                            is_case_rename = new_dest.name.lower() == dest_file.name.lower()
-                            if not new_dest.exists() or is_case_rename:
+                            # Use samefile() to avoid overwriting a different file
+                            # on case-sensitive filesystems where a case-only name
+                            # variant may point to an unrelated file.
+                            if not new_dest.exists():
                                 dest_file.rename(new_dest)
                                 dest_file = new_dest
+                            else:
+                                try:
+                                    if dest_file.samefile(new_dest):
+                                        dest_file.rename(new_dest)
+                                        dest_file = new_dest
+                                except OSError:
+                                    pass
                     if is_duplicate:
                         logger.debug(
                             "%s  →  %s (duplicate)", dest_file.name, dest_file.parent
@@ -629,14 +840,10 @@ def main() -> int:
     if args.dry_run:
         logger.info("Dry run complete. No files were modified.")
         if args.strip_suffix:
-            logger.info("Dry run - suffix stripping preview ...")
-            for folder_name in plan:
-                subfolder = destination / folder_name
-                if subfolder.is_dir():
-                    strip_duplicate_suffix(subfolder, dry_run=True)
-                dup_folder = subfolder / DUPLICATES_SUBFOLDER
-                if dup_folder.is_dir():
-                    strip_duplicate_suffix(dup_folder, dry_run=True)
+            logger.info(
+                "Suffix stripping preview skipped: destination folders do not "
+                "exist yet in dry-run mode. Re-run without --dry-run to apply."
+            )
         return 0
 
     # Execute the plan
