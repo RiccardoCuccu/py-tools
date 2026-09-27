@@ -42,3 +42,13 @@ python organize_media_by_camera.py C:\Users\Me\Pictures --destination D:\Sorted
 ```
 pip install Pillow pillow-heif
 ```
+
+## Tests
+
+The `tests/` folder covers the MP4/MOV atom parser across every metadata layout it understands (iTunes-style, Samsung, iPhone MOV), EXIF-based image detection, label building and folder-name sanitization, file collection and plan building, the move/copy/dry-run/duplicate-routing logic in `execute_plan`, `strip_duplicate_suffix`, and the CLI entry point.
+
+```
+pip install -r requirements-dev.txt
+pytest tests -v
+
+```

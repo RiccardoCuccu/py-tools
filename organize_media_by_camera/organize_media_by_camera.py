@@ -173,10 +173,7 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
         if len(raw) < 8:
             break
         size, name = struct.unpack(">I4s", raw)
-        try:
-            name_str = name.decode("latin-1")
-        except ValueError:
-            break
+        name_str = name.decode("latin-1")
         if size == 1:
             # 64-bit extended size: next 8 bytes are the real size
             ext = fh.read(8)
@@ -277,10 +274,7 @@ def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # t
         # Path B: numeric indices resolved via the keys atom
         if keys_mapping and (not make or not model):
             for ilst_key_str, ilst_val in ilst_atoms.items():
-                try:
-                    key_idx = struct.unpack(">I", ilst_key_str.encode("latin-1"))[0]
-                except (ValueError, struct.error):
-                    continue
+                key_idx = struct.unpack(">I", ilst_key_str.encode("latin-1"))[0]
                 name = keys_mapping.get(key_idx, "")
                 if not name:
                     continue
@@ -404,9 +398,6 @@ def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # t
                             value = after[:end].decode("ascii")
                             if prefix == b"mdln":
                                 model = model or value
-                                # Map Samsung model numbers (e.g. "SM-S931B" → "Galaxy S25")
-                                if model.startswith("SM-") and "Galaxy" not in model:
-                                    pass  # keep model as-is; user can rename folder later
                             elif prefix in (b"make", b"manu"):
                                 make = make or value
 
@@ -619,6 +610,7 @@ def execute_plan(
                     new_suffix = src.suffix.lower() if ext_case == "lower" else src.suffix.upper()
                     if new_suffix != src.suffix:
                         display_name = src.stem + new_suffix
+                files_ok += 1
                 logger.debug("[DRY-RUN] %s  →  %s", display_name, target_dir)
             else:
                 try:
@@ -651,9 +643,6 @@ def execute_plan(
                 except Exception as exc:
                     logger.error("Failed to process %s: %s", src.name, exc)
                     files_skipped += 1
-
-        if dry_run:
-            files_ok += len(sorted_files)
 
     return files_ok, files_skipped, files_duplicated
 
