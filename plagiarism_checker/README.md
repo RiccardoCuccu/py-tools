@@ -82,4 +82,4 @@ To use `plagiarism_checker.py`, you'll need to install the following Python libr
 pip install python-docx PyMuPDF requests beautifulsoup4 scikit-learn nltk
 ```
 
-See [SETUP.md](SETUP.md) for detailed setup instructions, including SerpApi configuration (recommended for reliable results).
+See [SETUP.md](SETUP.md) for detailed setup instructions, including SerpApi configuration (recommended for reliable results) and the contact email used by `--use-apis`.

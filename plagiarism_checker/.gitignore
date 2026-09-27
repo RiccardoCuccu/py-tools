@@ -29,6 +29,8 @@ wheels/
 .plagiarism_cache/
 *_plagiarism_report.txt
 .serpapi_config
+config.json
+!config.example.json
 
 # IDE
 .vscode/

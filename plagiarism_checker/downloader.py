@@ -13,7 +13,7 @@ import hashlib
 import re
 import gzip
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 try:
     import requests
@@ -23,6 +23,8 @@ except ImportError as e:
     print(f"Error: Missing required library - {e}")
     print("pip install requests beautifulsoup4 nltk")
     sys.exit(1)
+
+from config import get_contact_email
 
 
 class ContentDownloader:
@@ -35,6 +37,63 @@ class ContentDownloader:
         self.cache_dir = script_dir / ".plagiarism_cache"
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_only = cache_only
+        self.cache_index_file = self.cache_dir / "_index.tsv"
+
+    def get_all_cached_sources(self):
+        """Load every source currently present in the cache.
+
+        Used with --cache-only, where the list of URLs to check is not known
+        ahead of time (no search is performed). Falls back to a placeholder
+        URL for cache entries written before the hash-to-URL index existed.
+        """
+        index = self._read_cache_index()
+        hashes = set(index.keys())
+
+        for cache_file in self.cache_dir.glob('*.txt.gz'):
+            hashes.add(cache_file.name[:-len('.txt.gz')])
+        for cache_file in self.cache_dir.glob('*.txt'):
+            hashes.add(cache_file.name[:-len('.txt')])
+
+        sources = []
+        for url_hash in sorted(hashes):
+            cached_content = self._read_cache(url_hash)
+            if cached_content and len(cached_content) > 200:
+                url = index.get(url_hash, f"cached://{url_hash}")
+                sources.append({
+                    'url': url,
+                    'content': cached_content,
+                    'title': self._extract_title(cached_content)
+                })
+
+        if sources:
+            print(f"✓ Loaded {len(sources)} sources from cache")
+        else:
+            print(f"  No cached sources found in {self.cache_dir}")
+
+        return sources
+
+    def _read_cache_index(self):
+        """Read the hash-to-URL index built up by _write_cache."""
+        index = {}
+        if self.cache_index_file.exists():
+            try:
+                for line in self.cache_index_file.read_text(encoding='utf-8', errors='ignore').splitlines():
+                    if '\t' in line:
+                        url_hash, url = line.split('\t', 1)
+                        index[url_hash] = url
+            except Exception:
+                pass
+        return index
+
+    def _append_cache_index(self, url_hash, url):
+        """Append a hash-to-URL mapping to the index file (no duplicate entries)."""
+        try:
+            index = self._read_cache_index()
+            if url_hash not in index:
+                with open(self.cache_index_file, 'a', encoding='utf-8') as f:
+                    f.write(f"{url_hash}\t{url}\n")
+        except Exception:
+            pass
 
     def get_cached_sources(self, urls):
         """Get only cached sources without downloading new ones"""
@@ -106,7 +165,7 @@ class ContentDownloader:
         if self._is_academic_source(url):
             content, error = self._try_api_methods(url)
             if content:
-                self._write_cache(url_hash, content)
+                self._write_cache(url_hash, content, url)
                 return content, None
 
         # Fallback to traditional scraping methods
@@ -121,7 +180,7 @@ class ContentDownloader:
             try:
                 text = method(url, timeout)
                 if text and len(text) > 0:
-                    self._write_cache(url_hash, text)
+                    self._write_cache(url_hash, text, url)
                     return text, None
             except requests.exceptions.Timeout:
                 last_error = f"Timeout after {timeout}s"
@@ -221,7 +280,8 @@ class ContentDownloader:
             doi = doi_match.group(0).rstrip('.,;')
             
             # Try Unpaywall API to find open access version
-            unpaywall_url = f"https://api.unpaywall.org/v2/{doi}?email=user@example.com"
+            email_encoded = quote(get_contact_email(), safe='')
+            unpaywall_url = f"https://api.unpaywall.org/v2/{doi}?email={email_encoded}"
             response = requests.get(unpaywall_url, timeout=15)
             
             if response.status_code == 200:
@@ -351,7 +411,7 @@ class ContentDownloader:
         
         return None
 
-    def _write_cache(self, url_hash, text):
+    def _write_cache(self, url_hash, text, url=None):
         """Write content to cache with compression for large files"""
         cache_file_gz = self.cache_dir / f"{url_hash}.txt.gz"
         try:
@@ -360,6 +420,9 @@ class ContentDownloader:
         except Exception:
             cache_file = self.cache_dir / f"{url_hash}.txt"
             cache_file.write_text(text, encoding='utf-8', errors='ignore')
+
+        if url:
+            self._append_cache_index(url_hash, url)
 
     def _method_desktop(self, url, timeout):
         """Download method 1: Standard desktop User-Agent with academic headers"""

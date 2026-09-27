@@ -154,7 +154,7 @@ class PlagiarismChecker:
         # STEP 4: Download content from found URLs
         if self.cache_only:
             print(f"\n[4/5] Loading cached sources only...")
-            online_sources = self.downloader.get_cached_sources(all_sources)
+            online_sources = self.downloader.get_all_cached_sources()
             download_failures = []
             
             if not online_sources:
@@ -240,8 +240,15 @@ Examples:
                         help='Search engine to use: auto (SerpApi if configured, else DuckDuckGo), duckduckgo, serpapi (default: auto).')
     parser.add_argument('--cache-only', action='store_true',
                         help='Use only cached sources without downloading new ones (useful for re-analysis)')
+    parser.add_argument('--reset-serpapi-key', action='store_true',
+                        help='Delete the SerpApi key stored in the OS keyring and exit (useful to rotate it)')
 
     args = parser.parse_args()
+
+    if args.reset_serpapi_key:
+        from search_engines import reset_serpapi_key
+        print(reset_serpapi_key())
+        sys.exit(0)
 
     # Validate that a file was provided
     if args.file is None:
@@ -259,7 +266,8 @@ Examples:
         sys.exit(1)
 
     # Validate file format
-    if not (args.file.endswith('.docx') or args.file.endswith('.pdf') or args.file.endswith('.txt')):
+    file_lower = args.file.lower()
+    if not (file_lower.endswith('.docx') or file_lower.endswith('.pdf') or file_lower.endswith('.txt')):
         print("Error: File must be a .docx, .pdf or .txt document")
         print("Supported formats: .docx, .pdf, .txt")
         sys.exit(1)

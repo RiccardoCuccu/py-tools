@@ -9,19 +9,59 @@ import sys
 import os
 import time
 import re
+import getpass
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import requests
     from bs4 import BeautifulSoup
+    import keyring
+    import keyring.errors
+    from keyring.backends.fail import Keyring as FailKeyring
 except ImportError as e:
     print(f"Error: Missing required library - {e}")
-    print("pip install requests beautifulsoup4")
+    print("pip install requests beautifulsoup4 keyring")
     sys.exit(1)
 
 from extractors import TextExtractor
+from config import get_contact_email
+
+# OS keyring service/username used to store the SerpApi key
+KEYRING_SERVICE = "py-tools/plagiarism_checker"
+KEYRING_USERNAME = "serpapi"
+
+
+def _keyring_backend_available():
+    """Check whether a real (non-fail) keyring backend is usable.
+
+    Returns:
+        True if the OS keyring can be used to store/retrieve secrets.
+    """
+    try:
+        backend = keyring.get_keyring()
+    except keyring.errors.KeyringError:
+        return False
+    return not isinstance(backend, FailKeyring)
+
+
+def reset_serpapi_key():
+    """Delete the stored SerpApi key from the OS keyring.
+
+    Returns:
+        A user-facing message describing the outcome.
+    """
+    if not _keyring_backend_available():
+        return "Keyring unavailable on this system; there is nothing to reset."
+
+    try:
+        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return "SerpApi key removed from the OS keyring."
+    except keyring.errors.PasswordDeleteError:
+        return "No SerpApi key was stored in the OS keyring."
+    except keyring.errors.KeyringError as e:
+        return f"Could not reset SerpApi key: {e}"
 
 
 class SearchEngineManager:
@@ -54,27 +94,63 @@ class SearchEngineManager:
         self.extractor = TextExtractor(doc_path)
 
     def _load_serpapi_key(self):
-        """Load SerpApi key from config file in script directory"""
-        config_path = self.script_dir / ".serpapi_config"
-        
-        if config_path.exists():
+        """Load SerpApi key: env var, then OS keyring, then legacy file migration, then prompt"""
+        env_key = os.environ.get("SERPAPI_API_KEY")
+        if env_key:
+            return env_key.strip()
+
+        keyring_available = _keyring_backend_available()
+
+        if keyring_available:
             try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    api_key = f.read().strip()
-                    if api_key:
-                        print(f"✓ Using SerpApi key from {config_path}")
-                        return api_key
+                stored_key = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+            except keyring.errors.KeyringError:
+                stored_key = None
+                keyring_available = False
+            if stored_key:
+                return stored_key
+
+        # One-time migration from the old plaintext file, if present
+        legacy_path = self.script_dir / ".serpapi_config"
+        if legacy_path.exists():
+            legacy_key = None
+            try:
+                with open(legacy_path, 'r', encoding='utf-8') as f:
+                    legacy_key = f.read().strip()
+            except OSError as e:
+                print(f"Warning: Could not read config file {legacy_path}: {e}")
+
+            if legacy_key:
+                if keyring_available:
+                    readback = None
+                    try:
+                        keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, legacy_key)
+                        readback = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+                    except keyring.errors.KeyringError:
+                        readback = None
+
+                    if readback == legacy_key:
+                        try:
+                            legacy_path.unlink()
+                            print("✓ SerpApi key migrated to Windows Credential Manager, .serpapi_config removed")
+                        except OSError as e:
+                            print(f"Warning: Migrated key to keyring but could not remove {legacy_path}: {e}")
+                        return legacy_key
                     else:
-                        print(f"Warning: .serpapi_config file is empty")
-            except Exception as e:
-                print(f"Warning: Could not read config file {config_path}: {e}")
-        
-        # If no key found in file and serpapi is explicitly chosen, prompt user
+                        print("Warning: Could not save the migrated key to the keyring; keeping .serpapi_config")
+                        return legacy_key
+                else:
+                    print("Warning: Keyring unavailable; keeping .serpapi_config")
+                    return legacy_key
+            else:
+                print(f"Warning: .serpapi_config file is empty")
+
+        # If no key found and serpapi is explicitly chosen, prompt user
         if self.search_engine == 'serpapi':
             print("\n" + "=" * 80)
             print("SERPAPI KEY REQUIRED")
             print("=" * 80)
-            print("\nNo SerpApi key found in .serpapi_config file.")
+            print("\nNo SerpApi key found in the OS keyring.")
             print("SerpApi is the recommended replacement for reliable search results.")
             print("\nTo get a free API key (250 free searches/month):")
             print("  1. Visit https://serpapi.com/")
@@ -82,43 +158,22 @@ class SearchEngineManager:
             print("  3. Copy your API key from the dashboard")
             print("\nSee SETUP.md for detailed instructions.")
             print("=" * 80)
-        
+
             from main import confirm_continue
             if confirm_continue("\nDo you have a SerpApi key to configure now?"):
-                api_key = input("\nEnter your SerpApi key: ").strip()
+                api_key = getpass.getpass("\nEnter your SerpApi key: ").strip()
                 if api_key:
-                    save_path = self.script_dir / ".serpapi_config"
-                    
-                    try:
-                        with open(save_path, 'w', encoding='utf-8') as f:
-                            f.write(api_key)
-                        print(f"\n✓ API key saved to {save_path}")
-                        
-                        # Add to .gitignore if not already present
-                        gitignore_path = self.script_dir / ".gitignore"
+                    if keyring_available:
                         try:
-                            gitignore_content = ""
-                            if gitignore_path.exists():
-                                with open(gitignore_path, 'r', encoding='utf-8') as f:
-                                    gitignore_content = f.read()
-                            
-                            if '.serpapi_config' not in gitignore_content:
-                                with open(gitignore_path, 'a', encoding='utf-8') as f:
-                                    if gitignore_content and not gitignore_content.endswith('\n'):
-                                        f.write('\n')
-                                    f.write('\n# SerpApi configuration\n.serpapi_config\n')
-                                print(f"✓ Added .serpapi_config to .gitignore")
-                            else:
-                                print(f"✓ .serpapi_config already in .gitignore")
-                        except Exception as e:
-                            print(f"⚠ Warning: Could not update .gitignore: {e}")
-                            print("  Please manually add .serpapi_config to your .gitignore file")
-                        
-                        return api_key
-                    except Exception as e:
-                        print(f"✗ Error: Could not save API key: {e}")
-                        print("  API key will be used for this session only.")
-                        return api_key
+                            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
+                            print("\n✓ API key saved to the OS keyring")
+                        except keyring.errors.KeyringError as e:
+                            print(f"\n⚠ Warning: Could not save API key to the keyring: {e}")
+                            print("  API key will be used for this session only.")
+                    else:
+                        print("\n⚠ Warning: No keyring backend available on this system.")
+                        print("  API key will be used for this session only and never written to disk.")
+                    return api_key
                 else:
                     print("\n✗ Error: API key cannot be empty.")
                     print("  Cannot proceed without API key when using --search-engine serpapi")
@@ -126,7 +181,7 @@ class SearchEngineManager:
             else:
                 print("\nCannot proceed without API key when using --search-engine serpapi")
                 sys.exit(1)
-        
+
         return None
 
     def search_and_load(self, phrases, max_sources):
@@ -197,7 +252,7 @@ class SearchEngineManager:
                 print(f"\n⚠️ WARNING: DuckDuckGo has aggressive rate limiting")
                 print(f"  You will likely be blocked after 3-5 searches")
                 print(f"  Consider using SerpApi instead (250 free searches/month)")
-                print(f"  Set up .serpapi_config or use --search-engine serpapi\n")
+                print(f"  Set up SerpApi (see SETUP.md) or use --search-engine serpapi\n")
             else:  # auto
                 if self.serpapi_key:
                     engine_name = "SerpApi"
@@ -206,7 +261,7 @@ class SearchEngineManager:
                     print(f"\n⚠️ No SerpApi key detected - falling back to DuckDuckGo")
                     print(f"  DuckDuckGo has aggressive rate limiting and will likely fail")
                     print(f"  Get free SerpApi key (250 searches/month): https://serpapi.com/")
-                    print(f"  Create .serpapi_config file in script directory for reliable results\n")
+                    print(f"  Set up SerpApi (see SETUP.md) for reliable results\n")
             
             print(f"[3/5] Searching online for similar content using {engine_name}...")
 
@@ -245,7 +300,7 @@ class SearchEngineManager:
                 print(f"\n  SOLUTION: Get a free SerpApi key (250 searches/month):")
                 print(f"    1. Visit https://serpapi.com/")
                 print(f"    2. Sign up (no credit card required)")
-                print(f"    3. Create .serpapi_config file in script directory")
+                print(f"    3. Set it up as described in SETUP.md")
                 print(f"\n  Alternative: Use --use-local to compare with local files only")
                 
                 from main import confirm_continue
@@ -309,7 +364,8 @@ class SearchEngineManager:
         """Search CrossRef API for academic papers"""
         try:
             query_encoded = quote_plus(query[:100])
-            url = f"https://api.crossref.org/works?query={query_encoded}&rows=3&mailto=user@example.com"
+            email_encoded = quote(get_contact_email(), safe='')
+            url = f"https://api.crossref.org/works?query={query_encoded}&rows=3&mailto={email_encoded}"
             response = requests.get(url, headers={'User-Agent': 'PlagiarismChecker/1.0'}, timeout=10)
             if response.status_code == 200:
                 urls = []
