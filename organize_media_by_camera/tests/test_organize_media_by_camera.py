@@ -1218,6 +1218,102 @@ def test_execute_plan_ext_case_samefile_check_raising_oserror_is_swallowed(
     assert names == ["Photo.JPG"]  # rename skipped, original case preserved
 
 
+def _simulate_case_variant_target(
+    monkeypatch: pytest.MonkeyPatch, target_name: str, *, same_file: bool
+) -> list[tuple[Path, Path]]:
+    """Make the case-changed name *target_name* look occupied.
+
+    Path.exists() reports True for that name and Path.samefile() returns
+    *same_file*, so the collision logic can be exercised on a case-insensitive
+    filesystem that cannot hold both case variants. Returns the list of
+    (source, target) pairs passed to Path.rename(), which still renames for real.
+    """
+    real_exists = Path.exists
+    real_rename = Path.rename
+    renames: list[tuple[Path, Path]] = []
+
+    def _exists(self: Path, *args: object, **kwargs: object) -> bool:
+        return self.name == target_name or real_exists(self, *args, **kwargs)
+
+    def _samefile(self: Path, other: Path) -> bool:
+        return same_file
+
+    def _rename(self: Path, target: Path) -> Path:
+        renames.append((self, Path(target)))
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "exists", _exists)
+    monkeypatch.setattr(Path, "samefile", _samefile)
+    monkeypatch.setattr(Path, "rename", _rename)
+    return renames
+
+
+def test_execute_plan_in_place_ext_case_collision_keeps_name_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An in-place ext-case rename onto a different file's name is skipped with a
+    warning; the original file is kept and nothing is overwritten."""
+    dest = tmp_path / "dest"
+    placed = _touch(dest / "Apple_iPhone" / "a.JPG", content=b"original")
+    renames = _simulate_case_variant_target(monkeypatch, "a.jpg", same_file=False)
+
+    with caplog.at_level(logging.WARNING, logger="organize_media_by_camera"):
+        result = execute_plan(
+            {"Apple_iPhone": [placed]}, dest, copy=False, dry_run=False, ext_case="lower"
+        )
+
+    assert result == (1, 0, 0)
+    assert renames == []
+    assert [p.name for p in placed.parent.iterdir()] == ["a.JPG"]
+    assert placed.read_bytes() == b"original"
+    assert "Keeping 'a.JPG'" in caplog.text
+    assert "'a.jpg'" in caplog.text
+
+
+def test_execute_plan_in_place_ext_case_same_file_renames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When the case-changed name resolves to the same file (case-insensitive
+    filesystem), the in-place rename proceeds without a warning."""
+    dest = tmp_path / "dest"
+    placed = _touch(dest / "Apple_iPhone" / "a.JPG", content=b"original")
+    renames = _simulate_case_variant_target(monkeypatch, "a.jpg", same_file=True)
+
+    with caplog.at_level(logging.WARNING, logger="organize_media_by_camera"):
+        result = execute_plan(
+            {"Apple_iPhone": [placed]}, dest, copy=False, dry_run=False, ext_case="lower"
+        )
+
+    assert result == (1, 0, 0)
+    assert [src.name for src, _ in renames] == ["a.JPG"]
+    assert [p.name for p in placed.parent.iterdir()] == ["a.jpg"]
+    assert (placed.parent / "a.jpg").read_bytes() == b"original"
+    assert "Keeping" not in caplog.text
+
+
+def test_execute_plan_moved_file_ext_case_collision_keeps_name_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """After a move, an ext-case rename onto a different file's name is skipped
+    with a warning; the moved file keeps its original name and content."""
+    photo = _touch(tmp_path / "source" / "a.JPG", content=b"incoming")
+    dest = tmp_path / "dest"
+    renames = _simulate_case_variant_target(monkeypatch, "a.jpg", same_file=False)
+
+    with caplog.at_level(logging.WARNING, logger="organize_media_by_camera"):
+        result = execute_plan(
+            {"Apple_iPhone": [photo]}, dest, copy=False, dry_run=False, ext_case="lower"
+        )
+
+    assert result == (1, 0, 0)
+    assert renames == []
+    moved = dest / "Apple_iPhone"
+    assert [p.name for p in moved.iterdir()] == ["a.JPG"]
+    assert (moved / "a.JPG").read_bytes() == b"incoming"
+    assert "Keeping 'a.JPG'" in caplog.text
+    assert "'a.jpg'" in caplog.text
+
+
 def test_execute_plan_skips_file_when_action_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

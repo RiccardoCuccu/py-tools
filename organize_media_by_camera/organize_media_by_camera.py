@@ -589,7 +589,8 @@ def execute_plan(
                                     logger.debug("%s  →  %s (ext-case rename)", src.name, new_path.name)
                                 else:
                                     logger.warning(
-                                        "Keeping '%s': cannot rename to '%s', a different file already uses that name.",
+                                        "Keeping '%s': cannot rename to '%s', "
+                                        "a different file already uses that name.",
                                         src.name,
                                         new_path.name,
                                     )
@@ -643,16 +644,22 @@ def execute_plan(
                             # Use samefile() to avoid overwriting a different file
                             # on case-sensitive filesystems where a case-only name
                             # variant may point to an unrelated file.
-                            if not new_dest.exists():
+                            rename_allowed = True
+                            if new_dest.exists():
+                                try:
+                                    rename_allowed = dest_file.samefile(new_dest)
+                                except OSError:
+                                    rename_allowed = False
+                            if rename_allowed:
                                 dest_file.rename(new_dest)
                                 dest_file = new_dest
                             else:
-                                try:
-                                    if dest_file.samefile(new_dest):
-                                        dest_file.rename(new_dest)
-                                        dest_file = new_dest
-                                except OSError:
-                                    pass
+                                logger.warning(
+                                    "Keeping '%s': cannot rename to '%s', "
+                                    "a different file already uses that name.",
+                                    dest_file.name,
+                                    new_dest.name,
+                                )
                     if is_duplicate:
                         logger.debug(
                             "%s  →  %s (duplicate)", dest_file.name, dest_file.parent
