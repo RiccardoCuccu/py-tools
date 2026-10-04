@@ -12,6 +12,7 @@ sys.path.insert(0, str(TOOL_DIR))
 # Interpreter and pytest housekeeping that legitimately writes inside the tree
 _ALLOWED_PARTS = ("__pycache__", ".pytest_cache")
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+_WRITE_MODE_CHARS = "wax+"
 _guard_active = False
 
 
@@ -34,7 +35,7 @@ def _audit(event: str, args: tuple[object, ...]) -> None:
     if event == "open":
         flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
         mode = args[1] if len(args) > 1 and isinstance(args[1], str) else "r"
-        if not (flags & _WRITE_FLAGS or any(c in mode for c in "wax+")):
+        if not (flags & _WRITE_FLAGS or any(c in mode for c in _WRITE_MODE_CHARS)):
             return
         paths = tuple(args[:1])
     elif event in ("os.remove", "os.rename", "os.mkdir", "os.rmdir"):
