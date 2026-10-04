@@ -513,6 +513,37 @@ def _clean_stem(stem: str) -> str | None:
     return None
 
 
+def _rename_if_safe(src: Path, dst: Path) -> bool:
+    """
+    Rename *src* to *dst* unless *dst* is a different, existing file.
+
+    The rename proceeds when *dst* is free or already refers to *src* (a
+    case-insensitive filesystem). Otherwise a case-sensitive filesystem would
+    silently overwrite an unrelated file carrying the target-case name. A
+    samefile() OSError is treated as "different file". Logs a warning when the
+    rename is skipped.
+
+    Returns:
+        True if the file was renamed, False if it kept its original name.
+    """
+    allowed = True
+    if dst.exists():
+        try:
+            allowed = src.samefile(dst)
+        except OSError:
+            allowed = False
+    if not allowed:
+        logger.warning(
+            "Keeping '%s': cannot rename to '%s', "
+            "a different file already uses that name.",
+            src.name,
+            dst.name,
+        )
+        return False
+    src.rename(dst)
+    return True
+
+
 def execute_plan(
     plan: dict[str, list[Path]],
     destination: Path,
@@ -529,7 +560,9 @@ def execute_plan(
     overwriting or renaming the existing file.
 
     If ext_case is 'lower' or 'upper', the file extension is renamed to the
-    requested case immediately after each successful move/copy.
+    requested case immediately after each successful move/copy, unless the
+    case-changed name is already taken by a different file, in which case the
+    existing name is kept.
 
     Returns:
         A tuple (files_ok, files_skipped, files_duplicated).
@@ -570,8 +603,8 @@ def execute_plan(
                             logger.debug("[DRY-RUN] %s  →  %s (ext-case rename)", new_path.name, target_dir)
                         else:
                             try:
-                                src.rename(new_path)
-                                logger.debug("%s  →  %s (ext-case rename)", src.name, new_path.name)
+                                if _rename_if_safe(src, new_path):
+                                    logger.debug("%s  →  %s (ext-case rename)", src.name, new_path.name)
                             except Exception as exc:
                                 logger.error("Failed to rename %s: %s", src.name, exc)
                                 files_skipped += 1
@@ -619,19 +652,8 @@ def execute_plan(
                         new_suffix = dest_file.suffix.lower() if ext_case == "lower" else dest_file.suffix.upper()
                         if new_suffix != dest_file.suffix:
                             new_dest = dest_file.with_suffix(new_suffix)
-                            # Use samefile() to avoid overwriting a different file
-                            # on case-sensitive filesystems where a case-only name
-                            # variant may point to an unrelated file.
-                            if not new_dest.exists():
-                                dest_file.rename(new_dest)
+                            if _rename_if_safe(dest_file, new_dest):
                                 dest_file = new_dest
-                            else:
-                                try:
-                                    if dest_file.samefile(new_dest):
-                                        dest_file.rename(new_dest)
-                                        dest_file = new_dest
-                                except OSError:
-                                    pass
                     if is_duplicate:
                         logger.debug(
                             "%s  →  %s (duplicate)", dest_file.name, dest_file.parent
