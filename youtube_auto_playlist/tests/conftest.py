@@ -1,0 +1,110 @@
+"""Pytest configuration: make the tool importable and guard files and network."""
+
+import os
+import socket
+import sys
+from pathlib import Path
+
+import pytest
+
+TOOL_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TOOL_DIR))
+
+# Interpreter and pytest housekeeping that legitimately writes inside the tree
+_ALLOWED_PARTS = ("__pycache__", ".pytest_cache")
+# Directory holding credentials, tokens, state and logs: never even read by tests
+_PROTECTED_READ_DIR = TOOL_DIR / "config"
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+_WRITE_MODE_CHARS = "wax+"
+_guard_active = False
+
+
+def _normalized(path: object) -> str | None:
+    """Return a normalised absolute path, or None for fds and dir_fd-relative calls."""
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        return None
+    return os.path.normcase(os.path.abspath(os.fsdecode(path)))
+
+
+def _under(norm: str, root: Path) -> bool:
+    """Return True if the normalised path is root itself or lies below it."""
+    root_norm = os.path.normcase(str(root))
+    return norm == root_norm or norm.startswith(root_norm + os.sep)
+
+
+def _inside_tool_dir(path: object) -> bool:
+    """Return True if *path* is a real path under the tool dir (not housekeeping)."""
+    norm = _normalized(path)
+    if norm is None or not _under(norm, TOOL_DIR):
+        return False
+    return not any(part in norm.split(os.sep) for part in _ALLOWED_PARTS)
+
+
+def _audit(event: str, args: tuple[object, ...]) -> None:
+    """Fail loudly on any write, rename, delete or mkdir inside the tool dir."""
+    if not _guard_active or len(args) == 0:
+        return
+    if event == "open":
+        flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+        mode = args[1] if len(args) > 1 and isinstance(args[1], str) else "r"
+        norm = _normalized(args[0])
+        if norm is not None and _under(norm, _PROTECTED_READ_DIR):
+            raise AssertionError(f"Test touched the protected config dir: {args[0]!r}")
+        if not (flags & _WRITE_FLAGS or any(c in mode for c in _WRITE_MODE_CHARS)):
+            return
+        paths = tuple(args[:1])
+    elif event in ("os.remove", "os.rename", "os.mkdir", "os.rmdir"):
+        paths = tuple(a for a in args[:2] if a is not None)
+    else:
+        return
+    for path in paths:
+        if _inside_tool_dir(path):
+            raise AssertionError(f"Test attempted to modify the source tree: {path!r}")
+
+
+sys.addaudithook(_audit)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_source_tree_writes():
+    """Fail any test that writes outside pytest temp locations into the tool dir."""
+    global _guard_active
+    _guard_active = True
+    try:
+        yield
+    finally:
+        _guard_active = False
+
+
+@pytest.fixture(autouse=True)
+def _forbid_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail loudly on any attempt to open a network connection."""
+
+    def _blocked(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Test attempted to reach the network")
+
+    monkeypatch.setattr(socket.socket, "connect", _blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", _blocked)
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect every production path of the tool module into tmp_path."""
+    import youtube_auto_playlist as module
+
+    sandbox = tmp_path / "config"
+    sandbox.mkdir()
+    monkeypatch.setattr(module, "CONFIG_DIR", str(sandbox))
+    for name, file_name in (
+        ("CONFIG_FILE", "config.yaml"),
+        ("CLIENT_SECRET_FILE", "client_secret.json"),
+        ("TOKEN_FILE", "token.json"),
+        ("STATE_FILE", "state.json"),
+        ("LOG_FILE", "added_videos.log"),
+        ("SUBSCRIPTIONS_CACHE_FILE", "subscriptions_cache.json"),
+    ):
+        monkeypatch.setattr(module, name, str(sandbox / file_name))
+    monkeypatch.setattr(module, "quota_used", 0)
+    return sandbox
