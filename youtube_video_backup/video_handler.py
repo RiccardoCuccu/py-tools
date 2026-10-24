@@ -14,6 +14,8 @@ import yt_dlp
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
+from config import MIN_NATIVE_HEIGHT
+
 # YouTube API Quota Costs (as per YouTube Data API v3 documentation)
 QUOTA_VIDEO_UPLOAD = 1600
 
@@ -24,11 +26,23 @@ UPLOAD_MAX_BACKOFF_SECONDS = 60
 RETRYABLE_HTTP_STATUS_CODES = {500, 502, 503, 504}
 QUOTA_THUMBNAIL_UPLOAD = 50
 
-# Quality constraints
-MIN_NATIVE_HEIGHT = 1080  # Minimum resolution for "native quality"
+# API error reasons after which every further upload in this run would also fail
+FATAL_UPLOAD_REASONS = {
+    'uploadLimitExceeded': 'Upload limit exceeded',
+    'quotaExceeded': 'API quota exceeded',
+}
 
 # Prefixes forwarded from the yt-dlp logger to stdout
 _YTDLP_INFO_PREFIXES = ('[info]', '[youtube]', '[Merger]', '[ffmpeg]')
+
+
+def fatal_upload_reason(error):
+    """Return a short description if error means the whole run must stop, else None."""
+    text = str(error)
+    for reason, description in FATAL_UPLOAD_REASONS.items():
+        if reason in text:
+            return description
+    return None
 
 
 class _YtdlpLogger:
@@ -124,7 +138,7 @@ class VideoDownloader:
                     width, height = parts[0].strip(), parts[1].strip()
                     if width and height:
                         return f"{width}x{height}"
-        except:
+        except (OSError, subprocess.SubprocessError):
             pass
         
         return None
@@ -139,7 +153,7 @@ class VideoDownloader:
             from PIL import Image
             with Image.open(image_path) as img:
                 return f"{img.width}x{img.height}"
-        except:
+        except (OSError, ImportError):
             pass
         
         return None
@@ -159,7 +173,7 @@ class VideoDownloader:
                     return f"{size_bytes:.1f}{unit}"
                 size_bytes /= 1024.0
             return f"{size_bytes:.1f}TB"
-        except:
+        except OSError:
             pass
         
         return None
@@ -196,7 +210,7 @@ class VideoDownloader:
             try:
                 with open(info_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except (OSError, ValueError):
                 pass
         return {}
     
@@ -210,6 +224,11 @@ class VideoDownloader:
 
     def _list_available_formats(self, video_url):
         """List all available formats for a video and let user choose"""
+        if self.config.auto_confirm:
+            # Unattended run: nothing can answer the chooser, so skip the video
+            print("   Skipping format selection (auto-confirm enabled)")
+            return None
+
         print(f"\n📋 Fetching available formats...")
 
         try:
@@ -234,7 +253,7 @@ class VideoDownloader:
                     # Only include formats with video stream
                     if fmt.get('vcodec') != 'none':
                         # Identify HLS/DASH problematic formats
-                        protocol = fmt.get('protocol', '')
+                        protocol = fmt.get('protocol') or ''
 
                         # Detect HLS: check protocol and URL
                         is_hls = 'm3u8' in protocol or 'hls' in protocol.lower()
@@ -370,11 +389,16 @@ class VideoDownloader:
 
         # Check if video already exists locally
         video_file = self._find_file_with_extensions(base_path, self.VIDEO_EXTENSIONS)
+        info = self._load_info_json(video_id, output_dir) if video_file else {}
+
+        if video_file and not info:
+            # Without .info.json the upload would go out as "Untitled" with no description
+            print(f"\n   ⚠️  Found {os.path.basename(video_file)} but its metadata is missing or unreadable, re-downloading...")
+            video_file = None
 
         if video_file:
-            # File exists - load metadata and display
+            # File exists - display it
             thumbnail_file = self._find_file_with_extensions(base_path, self.THUMBNAIL_EXTENSIONS)
-            info = self._load_info_json(video_id, output_dir)
 
             print(f"\n   📂 Found existing download:")
 

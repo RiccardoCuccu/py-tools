@@ -5,11 +5,31 @@ Handles storage management (archive, state, config) and logging
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from config import ARCHIVE_FILE, STATE_FILE, LOG_FILE, DOWNLOAD_DIR, CONFIG_DIR, CHANNEL_VIDEOS_FILE, Config
+
+
+def atomic_write_json(path: str, data: Any) -> None:
+    """Write JSON to path via a temp file so a crash never leaves a truncated file."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
+
+
+def merge_videos(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return existing videos plus any entries of new whose id is not yet present."""
+    seen = {video["id"] for video in existing}
+    merged = list(existing)
+    for video in new:
+        if video["id"] not in seen:
+            seen.add(video["id"])
+            merged.append(video)
+    return merged
 
 
 class StorageManager:
@@ -46,14 +66,23 @@ class StorageManager:
             "full_backup_completed": False,
             "last_backup_date": None,
             "total_videos_backed_up": 0,
-            "quota_used_today": 0,
-            "quota_reset_date": datetime.now().isoformat()
+            "quota_used_today": 0
         }
     
     def save_state(self, state: dict[str, Any]) -> None:
         """Save backup state"""
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        atomic_write_json(STATE_FILE, state)
+
+    def update_state(self, **changes: Any) -> dict[str, Any]:
+        """Merge changes into the on-disk state and return the result.
+
+        Reloading before writing keeps fields owned by other components (the
+        quota counters) from being overwritten with a stale in-memory copy.
+        """
+        state = self.load_state()
+        state.update(changes)
+        self.save_state(state)
+        return state
     
     def load_channel_videos(self) -> dict[str, Any]:
         """Load complete channel videos cache"""
@@ -69,8 +98,7 @@ class StorageManager:
     
     def save_channel_videos(self, cache_data: dict[str, Any]) -> None:
         """Save complete channel videos cache"""
-        with open(CHANNEL_VIDEOS_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, indent=2)
+        atomic_write_json(CHANNEL_VIDEOS_FILE, cache_data)
     
     def update_channel_videos_cache(self, videos: list[dict[str, Any]], source_channel_id: str) -> dict[str, Any]:
         """Update the complete channel videos cache with ALL videos"""
@@ -83,9 +111,16 @@ class StorageManager:
         self.save_channel_videos(cache)
         return cache
     
-    def get_cached_videos(self) -> list[dict[str, Any]]:
-        """Get all videos from cache"""
+    def get_cached_videos(self, source_channel_id: str | None = None) -> list[dict[str, Any]]:
+        """Get all videos from cache.
+
+        When source_channel_id is given, a cache written for a different channel
+        is ignored so a changed config never backs up the wrong channel's videos.
+        """
         cache = self.load_channel_videos()
+        cached_channel = cache.get('source_channel_id')
+        if source_channel_id and cached_channel and cached_channel != source_channel_id:
+            return []
         return cache.get('all_videos', [])
     
     def clear_channel_videos_cache(self) -> None:
@@ -144,5 +179,5 @@ def safe_remove_files(*filepaths: str) -> None:
         if filepath and Path(filepath).exists():
             try:
                 Path(filepath).unlink()
-            except Exception as e:
+            except OSError as e:
                 print(f"⚠️ Error removing {filepath}: {e}")

@@ -22,6 +22,8 @@ Notes:
     - --use-cache and --re-fetch are mutually exclusive.
     - --auto-confirm skips the per-video backup confirmation prompt.
     - --ignore-quota-warning skips the quota-insufficient warning prompt.
+    - The cache only matters while a full backup is unfinished; incremental runs
+      always read the RSS feed and merge it into the cache.
 """
 
 import argparse
@@ -32,8 +34,11 @@ from datetime import datetime
 
 from config import Config, first_run_setup, validate_configuration, DOWNLOAD_DIR
 from youtube_client import YouTubeClient, QUOTA_DAILY_LIMIT  # type: ignore
-from video_handler import VideoDownloader, upload_video, QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD
-from utils import StorageManager, Logger, safe_remove_files
+from video_handler import (
+    VideoDownloader, upload_video, fatal_upload_reason,
+    QUOTA_VIDEO_UPLOAD, QUOTA_THUMBNAIL_UPLOAD,
+)
+from utils import StorageManager, Logger, safe_remove_files, merge_videos
 
 # Video processing constants
 VIDEOS_PER_API_PAGE = 50
@@ -66,7 +71,7 @@ def _parse_args():
         "--use-cache",
         action="store_true",
         default=False,
-        help="Use cached channel data when available (no API cost).",
+        help="Use cached channel data when resuming an unfinished full backup (no API cost).",
     )
     cache_group.add_argument(
         "--re-fetch",
@@ -119,14 +124,14 @@ def _run_upload(youtube, video_data, config, logger):
     """Attempt to upload a video, prompting for retry on failure.
 
     Returns the uploaded video ID string on success, or None to signal the
-    caller to skip this video. Re-raises the exception if uploadLimitExceeded
-    so the caller can abort the entire run.
+    caller to skip this video. Re-raises the exception if the upload limit or
+    API quota is exhausted so the caller can abort the entire run.
     """
     while True:
         try:
             return upload_video(youtube.service, video_data, config, youtube)
         except Exception as e:
-            if "uploadLimitExceeded" in str(e):
+            if fatal_upload_reason(e):
                 raise
             logger.log_error(f"Error during upload: {e}")
             if ask_retry_operation("upload", config.auto_confirm):
@@ -134,6 +139,147 @@ def _run_upload(youtube, video_data, config, logger):
                 continue
             print("⏭️ Skipping this video.")
             return None
+
+
+def _select_source_videos(args, config, storage, youtube, archive, use_full_backup):
+    """Decide where the source video list comes from and return it.
+
+    Returns (source_videos, use_full_backup), or None if the user cancelled.
+    A cached full list is only reused to resume an unfinished full backup; in
+    incremental mode the RSS feed is always read and merged into the cache so
+    newly published videos are never hidden by a stale cache.
+    """
+    cached_videos = storage.get_cached_videos(config.source_channel_id)
+
+    if cached_videos and use_full_backup:
+        cache_info = storage.load_channel_videos()
+        print(f"\n{'='*60}")
+        print("CACHED CHANNEL DATA FOUND")
+        print(f"{'='*60}")
+        print(f"Found {len(cached_videos)} videos in cache from previous run")
+        print(f"Last updated: {cache_info.get('last_updated', 'Unknown')}")
+        print("\nOptions:")
+        print("  1. Use cached data (recommended - no API cost)")
+        print("  2. Re-fetch videos from channel (costs API quota if using full backup)")
+
+        if args.use_cache:
+            use_cache = True
+            print("\nUsing cached data (--use-cache flag)")
+        elif args.re_fetch:
+            use_cache = False
+            print("\nRe-fetching from channel (--re-fetch flag)")
+        elif not config.auto_confirm:
+            use_cache = input("\nUse cache? (1/2): ").strip() == '1'
+        else:
+            use_cache = True
+            print("\nAuto-using cache (AUTO_CONFIRM enabled)")
+
+        if use_cache:
+            print(f"\nUsing {len(cached_videos)} videos from cache")
+            # Still a full backup: completion must be recorded once it finishes
+            return cached_videos, True
+
+        print("\nClearing cache and re-fetching...")
+        storage.clear_channel_videos_cache()
+        cached_videos = []
+    elif cached_videos and args.re_fetch:
+        print("\nClearing cache and re-fetching...")
+        storage.clear_channel_videos_cache()
+        cached_videos = []
+
+    if not use_full_backup:
+        print(f"\n{'='*60}")
+        print("INCREMENTAL MODE - Checking recent videos via RSS")
+        print(f"{'='*60}")
+        print("Checking for new videos (last ~15 from RSS feed)")
+        print("No API quota will be used for video discovery\n")
+
+        source_videos = merge_videos(
+            cached_videos, youtube.get_channel_videos_rss(config.source_channel_id)
+        )
+        storage.update_channel_videos_cache(source_videos, config.source_channel_id)
+        return source_videos, False
+
+    # Full backup: estimate quota cost
+    estimated_cost = 1 + (len(archive) // VIDEOS_PER_API_PAGE + 1)  # Channel list + backup check
+    print("\nEstimated quota cost for this run:")
+    print(f"   - Full backup mode: ~{estimated_cost} units (video discovery)")
+    print(f"   - Plus: {QUOTA_VIDEO_UPLOAD} units per video uploaded")
+    print(f"   - Plus: {QUOTA_THUMBNAIL_UPLOAD} units per thumbnail uploaded")
+
+    remaining = QUOTA_DAILY_LIMIT - youtube.get_quota_today()
+
+    if estimated_cost > remaining:
+        print("\n   WARNING: Not enough quota remaining!")
+        print(f"   Need ~{estimated_cost} units, have {remaining} units")
+        print("   Quota resets at midnight Pacific Time")
+
+        if not args.ignore_quota_warning:
+            response = input("\n   Continue anyway? (y/n): ").lower()
+            if response != 'y':
+                print("Operation cancelled by user")
+                return None
+        else:
+            print("\nContinuing despite quota warning (--ignore-quota-warning)")
+
+    print(f"\n{'='*60}")
+    print("FULL BACKUP MODE - First time complete backup")
+    print(f"{'='*60}")
+    print("This will retrieve ALL videos from the source channel via API")
+    print("Using API key (no OAuth needed for public source channel)")
+    print(f"Estimated quota cost: ~1 unit per {VIDEOS_PER_API_PAGE} videos")
+    print("After completion, future runs will use RSS (free)\n")
+
+    if not config.auto_confirm:
+        response = input("Proceed with full backup? (y/n): ").lower()
+        if response != 'y':
+            print("Full backup cancelled. Set INITIAL_FULL_BACKUP = False to use RSS mode.")
+            return None
+
+    source_videos = youtube.get_all_channel_videos_api(config.source_channel_id)
+    storage.update_channel_videos_cache(source_videos, config.source_channel_id)
+    return source_videos, True
+
+
+def _record_success(storage, logger, config, video, video_data, uploaded_video_id):
+    """Persist the outcome of one successful backup.
+
+    A dry run uploads nothing, so it must not touch the archive, log or counters:
+    otherwise the video would be skipped as "backed up" on every real run.
+    Returns the updated state dict, or None for a dry run.
+    """
+    if config.dry_run:
+        print(f"\n[DRY RUN] Nothing recorded; {video['id']} stays pending.")
+        return None
+
+    storage.save_to_archive(video['id'])
+    logger.log_backed_up_video(
+        video['id'],
+        video['title'],
+        video_data['info'].get('channel', 'Unknown Channel'),
+        uploaded_video_id
+    )
+
+    if config.delete_after_upload:
+        print("\nCleaning up temporary files...")
+        safe_remove_files(
+            video_data.get('video_file'),
+            video_data.get('thumbnail_file')
+        )
+    else:
+        print(f"\nFiles kept in: {DOWNLOAD_DIR}")
+        print(f"   Video: {os.path.basename(video_data['video_file'])}")
+        if video_data.get('thumbnail_file'):
+            print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
+
+    print("\nBackup completed successfully!")
+
+    # Reload from disk: the quota counters are written there by the YouTube client
+    previous = storage.load_state()
+    return storage.update_state(
+        total_videos_backed_up=previous.get("total_videos_backed_up", 0) + 1,
+        last_backup_date=datetime.now().isoformat(),
+    )
 
 
 def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quota_today, 
@@ -145,7 +291,7 @@ def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quot
     # Header - same for all interruptions
     print(f"\n{'='*60}")
     if interruption_reason:
-        print(f"⚠️  BACKUP INTERRUPTED")
+        print(f"BACKUP INTERRUPTED")
     else:
         print(f"🎉 Backup operation completed!")
     print(f"{'='*60}")
@@ -181,11 +327,11 @@ def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quot
         print(f"   • Remaining: {quota_remaining:,} units")
         
         if quota_today > 8000:
-            print(f"\n   ⚠️  WARNING: High quota usage!")
+            print(f"\n   WARNING: High quota usage!")
     
     # Interruption-specific information
     if interruption_reason:
-        print(f"\n⚠️  Reason: {interruption_reason}")
+        print(f"\nReason: {interruption_reason}")
         
         if "upload limit" in interruption_reason.lower():
             print(f"\n📋 Why this happened:")
@@ -196,9 +342,9 @@ def print_backup_summary(videos_backed_up, total_videos, state, quota_used, quot
             print(f"   2. Verify your account: https://www.youtube.com/verify")
             print(f"   3. Run this script again - it will resume automatically")
         else:
-            print(f"   → Run the script again to continue from where you left off")
+            print(f"   - Run the script again to continue from where you left off")
         
-        print(f"\n💡 All videos are saved in queue.json - no progress lost!")
+        print(f"\n💡 Progress is saved in archive.txt - no progress lost!")
     
     print(f"{'='*60}\n")
 
@@ -223,7 +369,7 @@ def ask_retry_operation(operation_type="operation", auto_confirm=False):
         return False  # In auto mode, don't retry infinitely
     
     print(f"\n{'─'*60}")
-    print(f"⚠️  {operation_type.capitalize()} failed!")
+    print(f"{operation_type.capitalize()} failed!")
     print(f"{'─'*60}")
     print("\nOptions:")
     print(f"  r - Retry {operation_type}")
@@ -244,6 +390,25 @@ def ask_retry_operation(operation_type="operation", auto_confirm=False):
             print("Invalid option. Please enter 'r', 's', or 'q'")
 
 
+def verify_backup_channel(youtube, config):
+    """
+    Abort the run unless the authenticated channel is the configured backup channel.
+
+    Uploads go to the OAuth account's channel, so a mismatch would publish to the wrong channel.
+    """
+    authenticated_id = youtube.get_authenticated_channel_id()
+    if not authenticated_id:
+        print("\nERROR: The authenticated account has no YouTube channel.")
+        sys.exit(1)
+    if authenticated_id != config.backup_channel_id:
+        print("\nERROR: The authenticated channel does not match backup_channel_id in config.json.")
+        print(f"  • Authenticated channel: {authenticated_id}")
+        print(f"  • Configured backup channel: {config.backup_channel_id}")
+        print("  Fix backup_channel_id or re-authenticate with the correct account.")
+        sys.exit(1)
+    print(f"Backup channel verified ({authenticated_id})")
+
+
 def main():
     """Main execution function"""
     args = _parse_args()
@@ -252,12 +417,11 @@ def main():
     print("║    YouTube Automatic Backup Script    ║")
     print("╚═══════════════════════════════════════╝\n")
 
-    # Validate config before any side effects
-    validate_configuration()
-
-    # First run setup
+    # The wizard creates config.json, so it must run before validation
     if not first_run_setup():
         sys.exit(1)
+
+    validate_configuration()
 
     # Load configuration
     config = Config.load()
@@ -265,131 +429,39 @@ def main():
     # CLI flags override config.py values
     if args.auto_confirm:
         config.auto_confirm = True
-    
+
     # Initialize components (StorageManager first!)
     storage = StorageManager(config)
     logger = Logger(config)
     youtube = YouTubeClient(config, storage)  # Pass storage to YouTubeClient
     downloader = VideoDownloader(config, logger)
-    # Note: upload_video is now a function, not a class
-    
+
     # Authenticate
-    print("🔐 Authenticating...")
+    print("Authenticating...")
     youtube.authenticate()
-    print("✓ Authentication completed")
-    
+    print("Authentication completed")
+    verify_backup_channel(youtube, config)
+
     # Show quota status
     youtube.show_quota_status()
-    
+
     # Load state and archive
     state = storage.load_state()
     archive = storage.load_archive()
-    print(f"✓ Archive loaded ({len(archive)} videos already backed up)")
-    
+    print(f"Archive loaded ({len(archive)} videos already backed up)")
+
     # Determine backup mode
     use_full_backup = config.should_do_full_backup(state)
-    
-    # Check if we have videos in cache from previous runs
-    cached_videos = storage.get_cached_videos()
-    
-    # Initialize source_videos
-    source_videos = []
-    
-    if cached_videos:
-        cache_info = storage.load_channel_videos()
-        print(f"\n{'='*60}")
-        print(f"📋 CACHED CHANNEL DATA FOUND")
-        print(f"{'='*60}")
-        print(f"Found {len(cached_videos)} videos in cache from previous run")
-        print(f"Last updated: {cache_info.get('last_updated', 'Unknown')}")
-        print(f"\nOptions:")
-        print(f"  1. Use cached data (recommended - no API cost)")
-        print(f"  2. Re-fetch videos from channel (costs API quota if using full backup)")
-        
-        if args.use_cache:
-            use_cache = True
-            print("\n✓ Using cached data (--use-cache flag)")
-        elif args.re_fetch:
-            use_cache = False
-            print("\n✓ Re-fetching from channel (--re-fetch flag)")
-        elif not config.auto_confirm:
-            response = input("\nUse cache? (1/2): ").strip()
-            use_cache = response == '1'
-        else:
-            use_cache = True
-            print("\n✓ Auto-using cache (AUTO_CONFIRM enabled)")
-        
-        if use_cache:
-            print(f"\n✓ Using {len(cached_videos)} videos from cache")
-            source_videos = cached_videos
-            use_full_backup = False  # Don't do full backup if using cache
-        else:
-            print(f"\n⚠️  Clearing cache and re-fetching...")
-            storage.clear_channel_videos_cache()
-            cached_videos = []
-    
-    # Only fetch new videos if we don't have any from cache
-    if not source_videos:
-        # Estimate quota cost
-        if use_full_backup:
-            estimated_cost = 1 + (len(archive) // VIDEOS_PER_API_PAGE + 1)  # Channel list + backup check
-            print(f"\n💰 Estimated quota cost for this run:")
-            print(f"   • Full backup mode: ~{estimated_cost} units (video discovery)")
-            print(f"   • Plus: {QUOTA_VIDEO_UPLOAD} units per video uploaded")
-            print(f"   • Plus: {QUOTA_THUMBNAIL_UPLOAD} units per thumbnail uploaded")
-            
-            remaining = QUOTA_DAILY_LIMIT - youtube.get_quota_today()
-            
-            if estimated_cost > remaining:
-                print(f"\n   ⚠️  WARNING: Not enough quota remaining!")
-                print(f"   Need ~{estimated_cost} units, have {remaining} units")
-                print(f"   Quota resets at midnight Pacific Time")
-                
-                if not args.ignore_quota_warning:
-                    response = input("\n   Continue anyway? (y/n): ").lower()
-                    if response != 'y':
-                        print("Operation cancelled by user")
-                        return
-                else:
-                    print("\n✓ Continuing despite quota warning (--ignore-quota-warning)")
-        
-        if use_full_backup:
-            print(f"\n{'='*60}")
-            print(f"📹 FULL BACKUP MODE - First time complete backup")
-            print(f"{'='*60}")
-            print(f"This will retrieve ALL videos from the source channel via API")
-            print(f"Using API key (no OAuth needed for public source channel)")
-            print(f"Estimated quota cost: ~1 unit per {VIDEOS_PER_API_PAGE} videos")
-            print(f"After completion, future runs will use RSS (free)\n")
-            
-            if not config.auto_confirm:
-                response = input("Proceed with full backup? (y/n): ").lower()
-                if response != 'y':
-                    print("Full backup cancelled. Set INITIAL_FULL_BACKUP = False to use RSS mode.")
-                    return
-            
-            # Get ALL videos via API
-            source_videos = youtube.get_all_channel_videos_api(config.source_channel_id)
-            
-            # Cache the complete list
-            storage.update_channel_videos_cache(source_videos, config.source_channel_id)
-        else:
-            print(f"\n{'='*60}")
-            print(f"📹 INCREMENTAL MODE - Checking recent videos via RSS")
-            print(f"{'='*60}")
-            print(f"Checking for new videos (last ~15 from RSS feed)")
-            print(f"No API quota will be used for video discovery\n")
-            
-            # Get recent videos via RSS
-            source_videos = youtube.get_channel_videos_rss(config.source_channel_id)
-            
-            # Cache the list
-            storage.update_channel_videos_cache(source_videos, config.source_channel_id)
-    
+
+    selection = _select_source_videos(args, config, storage, youtube, archive, use_full_backup)
+    if selection is None:
+        return
+    source_videos, use_full_backup = selection
+
     print(f"\n{'='*60}")
-    print(f"📹 Found {len(source_videos)} total videos")
+    print(f"Found {len(source_videos)} total videos")
     print(f"{'='*60}\n")
-    
+
     # Filter videos to backup
     videos_to_backup = []
     for video in source_videos:
@@ -419,10 +491,11 @@ def main():
         print("   No action needed.")
         
         # Mark full backup as completed if in full backup mode
-        if use_full_backup:
-            state["full_backup_completed"] = True
-            state["last_backup_date"] = datetime.now().isoformat()
-            storage.save_state(state)
+        if use_full_backup and not config.dry_run:
+            state = storage.update_state(
+                full_backup_completed=True,
+                last_backup_date=datetime.now().isoformat(),
+            )
             print("\n✓ Full backup marked as completed!")
             print("   Future runs will use RSS for incremental updates.")
         
@@ -431,8 +504,6 @@ def main():
     print(f"{'='*60}")
     print(f"📹 Videos to backup: {len(videos_to_backup)}/{len(source_videos)}")
     print(f"{'='*60}\n")
-    
-    # Note: We don't need to add to queue anymore, cache already has everything
     
     # Always sort by publish date - oldest first (chronological order)
     videos_to_backup.sort(key=lambda x: x['published'])
@@ -467,7 +538,7 @@ def main():
         print(f"   • After upload: ~{remaining_after:,} units remaining")
 
         if remaining < ESTIMATED_COST_PER_VIDEO:
-            print(f"\n   ⚠️  WARNING: Not enough quota for this video!")
+            print(f"\n   WARNING: Not enough quota for this video!")
             print(f"   Quota resets at midnight Pacific Time")
 
         # Ask for confirmation
@@ -484,8 +555,9 @@ def main():
         try:
             uploaded_video_id = _run_upload(youtube, video_data, config, logger)
         except Exception as e:
-            if "uploadLimitExceeded" in str(e):
-                interruption_reason = "Upload limit exceeded"
+            fatal_reason = fatal_upload_reason(e)
+            if fatal_reason:
+                interruption_reason = fatal_reason
                 break
             logger.log_error(f"Unexpected error during upload: {e}")
             break
@@ -493,39 +565,15 @@ def main():
         if uploaded_video_id is None:
             continue
 
-        # Success: record and clean up
         last_upload_time = time.time()
-        storage.save_to_archive(video['id'])
-        logger.log_backed_up_video(
-            video['id'],
-            video['title'],
-            video_data['info'].get('channel', 'Unknown Channel'),
-            uploaded_video_id
-        )
-
-        if config.delete_after_upload:
-            print("\n🧹 Cleaning up temporary files...")
-            safe_remove_files(
-                video_data.get('video_file'),
-                video_data.get('thumbnail_file')
-            )
-        else:
-            print(f"\n💾 Files kept in: {DOWNLOAD_DIR}")
-            print(f"   Video: {os.path.basename(video_data['video_file'])}")
-            if video_data.get('thumbnail_file'):
-                print(f"   Thumbnail: {os.path.basename(video_data['thumbnail_file'])}")
-
-        print(f"\n✅ Backup completed successfully!")
+        new_state = _record_success(storage, logger, config, video, video_data, uploaded_video_id)
+        if new_state is not None:
+            state = new_state
         videos_backed_up += 1
 
-        state["total_videos_backed_up"] = state.get("total_videos_backed_up", 0) + 1
-        state["last_backup_date"] = datetime.now().isoformat()
-        storage.save_state(state)
-
     # Mark full backup as completed if we processed all videos
-    if use_full_backup and videos_backed_up == len(videos_to_backup):
-        state["full_backup_completed"] = True
-        storage.save_state(state)
+    if use_full_backup and not config.dry_run and videos_backed_up == len(videos_to_backup):
+        state = storage.update_state(full_backup_completed=True)
         print(f"\n{'='*60}")
         print("🎉 FULL BACKUP COMPLETED!")
         print(f"{'='*60}")

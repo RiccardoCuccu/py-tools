@@ -6,8 +6,10 @@ Handles all YouTube API interactions, OAuth authentication, and RSS feed parsing
 
 import os
 import sys
-from datetime import datetime, timezone
-from typing import Optional
+import urllib.error
+import urllib.request
+from datetime import datetime
+from typing import Any, Optional
 
 import feedparser
 import pytz
@@ -25,8 +27,53 @@ QUOTA_HIGH_USAGE_THRESHOLD = 8000
 QUOTA_CHANNEL_LIST = 1
 QUOTA_PLAYLIST_ITEMS_LIST = 1
 
+# RSS feed access
+RSS_URL_TEMPLATE = 'https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}'
+RSS_TIMEOUT_SECONDS = 30
+WATCH_URL_TEMPLATE = 'https://www.youtube.com/watch?v={video_id}'
+
+# Placeholder titles of uploads-playlist entries whose video cannot be downloaded
+UNAVAILABLE_VIDEO_TITLES = {'Private video', 'Deleted video'}
+
 # Pacific Time timezone (handles PST/PDT automatically)
 PACIFIC_TZ = pytz.timezone('US/Pacific')
+
+
+def parse_feed_entries(entries: list[Any]) -> list[dict[str, str]]:
+    """Convert feedparser entries into video dicts, skipping entries without an id."""
+    videos = []
+    for entry in entries:
+        video_id = getattr(entry, 'yt_videoid', None)
+        if not video_id:
+            continue
+        videos.append({
+            'id': video_id,
+            'title': entry.title,
+            'published': entry.published,
+            'url': WATCH_URL_TEMPLATE.format(video_id=video_id),
+        })
+    return videos
+
+
+def parse_playlist_items(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Convert playlistItems API entries into video dicts.
+
+    Private and deleted uploads stay in the playlist as placeholders that yt-dlp
+    can never download, so they are dropped instead of failing every run.
+    """
+    videos = []
+    for item in items:
+        snippet = item['snippet']
+        if snippet['title'] in UNAVAILABLE_VIDEO_TITLES:
+            continue
+        video_id = snippet['resourceId']['videoId']
+        videos.append({
+            'id': video_id,
+            'title': snippet['title'],
+            'published': snippet['publishedAt'],
+            'url': WATCH_URL_TEMPLATE.format(video_id=video_id),
+        })
+    return videos
 
 
 class YouTubeClient:
@@ -51,6 +98,7 @@ class YouTubeClient:
         current_date_pacific = now_pacific.date().isoformat()
         
         # Get last reset date (stored as Pacific date)
+        # A state without a date has no usage to reset yet
         last_reset = state.get("quota_reset_date", current_date_pacific)
         
         # Check if we've crossed midnight Pacific Time
@@ -104,7 +152,11 @@ class YouTubeClient:
         credentials = None
         
         if os.path.exists(TOKEN_FILE):
-            credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            try:
+                credentials = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            except ValueError:
+                # Corrupt or incomplete token file: fall through to a fresh login
+                print("⚠️  OAuth token file is invalid. Re-authenticating...")
         
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
@@ -131,6 +183,21 @@ class YouTubeClient:
         self.service = build("youtube", "v3", credentials=credentials)
         return self.service
     
+    def get_authenticated_channel_id(self):
+        """
+        Return the id of the channel the OAuth credentials upload to.
+
+        Costs QUOTA_CHANNEL_LIST units. Returns None when the response has no channel.
+        """
+        if self.service is None:
+            raise RuntimeError("authenticate() must be called first")
+        service: Any = self.service  # Resource builds its methods dynamically
+        response = service.channels().list(part="id", mine=True).execute()
+        self.add_quota_cost(QUOTA_CHANNEL_LIST)
+        self.save_quota_state()
+        items = response.get("items") or []
+        return items[0].get("id") if items else None
+
     def _load_api_key(self):
         """Load API key from file"""
         if os.path.exists(API_KEY_FILE):
@@ -139,25 +206,29 @@ class YouTubeClient:
         return None
     
     def get_channel_videos_rss(self, channel_id):
-        """Retrieve channel videos via RSS feed (no quota cost) - Returns ~15 most recent"""
-        rss_url = f'https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}'
-        
+        """Retrieve channel videos via RSS feed (no quota cost) - Returns ~15 most recent
+
+        Raises RuntimeError when the feed cannot be fetched or parsed, so a network
+        failure is never mistaken for an empty channel.
+        """
+        rss_url = RSS_URL_TEMPLATE.format(channel_id=channel_id)
+
         print(f"\n📡 Fetching recent videos from channel RSS feed...")
-        feed = feedparser.parse(rss_url)
-        
-        videos = []
-        for entry in feed.entries:
-            video_id = entry.yt_videoid
-            videos.append({
-                'id': video_id,
-                'title': entry.title,
-                'published': entry.published,
-                'url': f'https://www.youtube.com/watch?v={video_id}'
-            })
-        
+        # feedparser has no network timeout of its own, so fetch the bytes here
+        try:
+            with urllib.request.urlopen(rss_url, timeout=RSS_TIMEOUT_SECONDS) as response:
+                payload = response.read()
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"Could not fetch RSS feed: {e}") from e
+
+        feed = feedparser.parse(payload)
+        if not feed.entries and feed.get('bozo'):
+            raise RuntimeError(f"Could not parse RSS feed: {feed.get('bozo_exception')}")
+
+        videos = parse_feed_entries(feed.entries)
         print(f"✓ Found {len(videos)} recent videos in RSS feed")
         return videos
-    
+
     def get_all_channel_videos_api(self, channel_id):
         """Retrieve ALL videos from channel via API using public API key"""
         print(f"\n📡 Fetching ALL videos from channel via API...")
@@ -205,14 +276,7 @@ class YouTubeClient:
             ).execute()
             self.add_quota_cost(QUOTA_PLAYLIST_ITEMS_LIST)
             
-            for item in playlist_response.get('items', []):
-                video_id = item['snippet']['resourceId']['videoId']
-                videos.append({
-                    'id': video_id,
-                    'title': item['snippet']['title'],
-                    'published': item['snippet']['publishedAt'],
-                    'url': f'https://www.youtube.com/watch?v={video_id}'
-                })
+            videos.extend(parse_playlist_items(playlist_response.get('items', [])))
             
             print(f"\r   ✓ Page {page_count} fetched ({len(videos)} videos total)")
             

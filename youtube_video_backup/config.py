@@ -21,8 +21,9 @@ DOWNLOAD_DELAY_SECONDS = 2                              # Minimum seconds betwee
 INITIAL_FULL_BACKUP = True                              # Set to True to do full channel backup via API (first run only)
                                                         # After first complete backup, set to False or delete state.json to trigger again
 DELETE_AFTER_UPLOAD = False                             # Set to True to delete video files after successful upload
-REQUIRE_NATIVE_QUALITY = True                           # Set to True to abort if video cannot be downloaded at native quality (720p+)
+REQUIRE_NATIVE_QUALITY = True                           # Set to True to abort if video cannot be downloaded at native quality (see MIN_NATIVE_HEIGHT)
                                                         # If False, will download at any available quality
+MIN_NATIVE_HEIGHT = 1080                                # Minimum video height in pixels that counts as native quality
 UPLOAD_CHUNK_SIZE_MB = 50                               # Upload chunk size in MB (default: 50MB)
                                                         # Smaller chunks = more resilient to network issues
                                                         # Larger chunks = faster upload on stable connections
@@ -111,7 +112,7 @@ class Config:
         status = self.video_privacy_status.lower()
         
         if status not in valid_statuses:
-            print(f"⚠️  Invalid privacy status '{status}', using 'unlisted' as default")
+            print(f"Invalid privacy status '{status}', using 'unlisted' as default")
             return 'unlisted'
         
         return status
@@ -192,7 +193,7 @@ def prompt_for_channel_ids():
     print("How to find your Channel ID:")
     print("  1. Go to YouTube Studio: https://studio.youtube.com")
     print("  2. Click on 'Settings' (gear icon)")
-    print("  3. Click on 'Channel' → 'Advanced settings'")
+    print("  3. Click on 'Channel' > 'Advanced settings'")
     print("  4. Your Channel ID is shown there")
     print("  5. Or go to: https://www.youtube.com/account_advanced\n")
     
@@ -222,43 +223,43 @@ def first_run_setup():
         print(f"✓ Created configuration directory: {CONFIG_DIR}\n")
     
     if not check_client_secret():
-        print(f"⚠️  Missing {CLIENT_SECRET_FILE}!\n")
+        print(f"Missing {CLIENT_SECRET_FILE}!\n")
         print(f"┌────────────────────────────────────────────────────┐")
         print(f"│ STEP-BY-STEP: Get OAuth 2.0 Credentials            │")
         print(f"└────────────────────────────────────────────────────┘\n")
         
         print(f"📋 STEP 1: Create/Select Google Cloud Project")
-        print(f"   → Go to: https://console.cloud.google.com/")
-        print(f"   → Click 'Select a project' → 'NEW PROJECT'")
-        print(f"   → Enter a project name → Click 'CREATE'\n")
+        print(f"   - Go to: https://console.cloud.google.com/")
+        print(f"   - Click 'Select a project' > 'NEW PROJECT'")
+        print(f"   - Enter a project name, then click 'CREATE'\n")
         
         print(f"📋 STEP 2: Enable YouTube Data API v3")
-        print(f"   → Go to: https://console.cloud.google.com/apis/library")
-        print(f"   → Search for 'YouTube Data API v3'")
-        print(f"   → Click on it → Click 'ENABLE'\n")
+        print(f"   - Go to: https://console.cloud.google.com/apis/library")
+        print(f"   - Search for 'YouTube Data API v3'")
+        print(f"   - Click on it, then click 'ENABLE'\n")
         
         print(f"📋 STEP 3: Configure OAuth Consent Screen")
-        print(f"   → Go to: https://console.cloud.google.com/apis/credentials/consent")
-        print(f"   → Select 'External' → Click 'CREATE'")
-        print(f"   → Fill in App name and User support email")
-        print(f"   → Click 'SAVE AND CONTINUE' through screens")
-        print(f"   → ⚠️ On 'Test users' screen:")
+        print(f"   - Go to: https://console.cloud.google.com/apis/credentials/consent")
+        print(f"   - Select 'External', then click 'CREATE'")
+        print(f"   - Fill in App name and User support email")
+        print(f"   - Click 'SAVE AND CONTINUE' through screens")
+        print(f"   - IMPORTANT: On 'Test users' screen:")
         print(f"     - Click 'ADD USERS'")
         print(f"     - Enter your email address")
         print(f"     - Click 'ADD' then 'SAVE AND CONTINUE'\n")
         
         print(f"📋 STEP 4: Create OAuth 2.0 Client ID")
-        print(f"   → Go to: https://console.cloud.google.com/apis/credentials")
-        print(f"   → Click 'CREATE CREDENTIALS' → 'OAuth client ID'")
-        print(f"   → Application type: Select 'Desktop app'")
-        print(f"   → Name: (e.g., 'YouTube Video Backup')")
-        print(f"   → Click 'CREATE'\n")
+        print(f"   - Go to: https://console.cloud.google.com/apis/credentials")
+        print(f"   - Click 'CREATE CREDENTIALS' > 'OAuth client ID'")
+        print(f"   - Application type: Select 'Desktop app'")
+        print(f"   - Name: (e.g., 'YouTube Video Backup')")
+        print(f"   - Click 'CREATE'\n")
         
         print(f"📋 STEP 5: Download Credentials")
-        print(f"   → In the popup, click 'DOWNLOAD JSON'")
-        print(f"   → Or: Go to Credentials page → Click download icon (⬇)")
-        print(f"   → Rename the file to: {os.path.basename(CLIENT_SECRET_FILE)}")
-        print(f"   → Move it to: {CONFIG_DIR}\n")
+        print(f"   - In the popup, click 'DOWNLOAD JSON'")
+        print(f"   - Or: Go to Credentials page, then click download icon")
+        print(f"   - Rename the file to: {os.path.basename(CLIENT_SECRET_FILE)}")
+        print(f"   - Move it to: {CONFIG_DIR}\n")
         
         print(f"┌────────────────────────────────────────────────────┐")
         print(f"│ After completing these steps, run the script again.│")
@@ -268,7 +269,7 @@ def first_run_setup():
     print("✓ Client secret file found\n")
     
     if not check_api_key():
-        print(f"⚠️  Missing {API_KEY_FILE}!\n")
+        print(f"Missing {API_KEY_FILE}!\n")
         print(f"┌────────────────────────────────────────────────────┐")
         print(f"│ STEP-BY-STEP: Get YouTube API Key                  │")
         print(f"└────────────────────────────────────────────────────┘\n")
@@ -276,26 +277,26 @@ def first_run_setup():
         print("channel without authentication.\n")
         
         print(f"📋 STEP 1: Go to Google Cloud Console")
-        print(f"   → https://console.cloud.google.com/apis/credentials")
-        print(f"   → (Use the SAME project where you created OAuth credentials)\n")
+        print(f"   - https://console.cloud.google.com/apis/credentials")
+        print(f"   - (Use the SAME project where you created OAuth credentials)\n")
         
         print(f"📋 STEP 2: Create API Key")
-        print(f"   → Click 'CREATE CREDENTIALS' → 'API key'")
-        print(f"   → A popup will show your new API key")
-        print(f"   → Click 'COPY' to copy the key\n")
+        print(f"   - Click 'CREATE CREDENTIALS' > 'API key'")
+        print(f"   - A popup will show your new API key")
+        print(f"   - Click 'COPY' to copy the key\n")
         
         print(f"📋 STEP 3: Restrict API Key (Recommended)")
-        print(f"   → Click 'EDIT API KEY' in the popup")
-        print(f"   → Under 'API restrictions':")
+        print(f"   - Click 'EDIT API KEY' in the popup")
+        print(f"   - Under 'API restrictions':")
         print(f"     - Select 'Restrict key'")
         print(f"     - Check only 'YouTube Data API v3'")
-        print(f"   → Click 'SAVE'\n")
+        print(f"   - Click 'SAVE'\n")
         
         print(f"📋 STEP 4: Save API Key")
-        print(f"   → Create a file named: {os.path.basename(API_KEY_FILE)}")
-        print(f"   → Paste your API key in the file (just the key, nothing else)")
-        print(f"   → Save it in: {CONFIG_DIR}")
-        print(f"   → ⚠️  IMPORTANT: Do NOT commit this file to repositories!\n")
+        print(f"   - Create a file named: {os.path.basename(API_KEY_FILE)}")
+        print(f"   - Paste your API key in the file (just the key, nothing else)")
+        print(f"   - Save it in: {CONFIG_DIR}")
+        print(f"   - IMPORTANT: Do NOT commit this file to repositories!\n")
         
         print(f"┌────────────────────────────────────────────────────┐")
         print(f"│ After creating api_key.txt, run the script again.  │")
@@ -342,7 +343,7 @@ def first_run_setup():
         print("How to add yourself as a test user:")
         print("  1. Go to: https://console.cloud.google.com/apis/credentials/consent")
         print("  2. Click 'EDIT APP' (or navigate to test users section)")
-        print("  3. Scroll to 'Test users' → Click 'ADD USERS'")
+        print("  3. Scroll to 'Test users', then click 'ADD USERS'")
         print("  4. Enter your email address")
         print("  5. Click 'SAVE'\n")
         
@@ -352,7 +353,7 @@ def first_run_setup():
                 print()
                 break
             elif response in ['no', 'n']:
-                print("\n⚠️ Please add yourself as a test user first, then run again.\n")
+                print("\nPlease add yourself as a test user first, then run again.\n")
                 return False
             else:
                 print("Please answer 'yes' or 'no'\n")
@@ -379,7 +380,7 @@ def first_run_setup():
     print(f"  • Download delay: {DOWNLOAD_DELAY_SECONDS} seconds between videos")
     print(f"  • Backup mode: {'Full backup (API)' if INITIAL_FULL_BACKUP else 'Incremental (RSS)'}")
     print(f"  • Delete after upload: {'YES (files will be deleted)' if DELETE_AFTER_UPLOAD else 'NO (files kept in downloads/)'}")
-    print(f"  • Require native quality: {'YES (abort if < 720p)' if REQUIRE_NATIVE_QUALITY else 'NO (accept any quality)'}")
+    print(f"  • Require native quality: {f'YES (abort if < {MIN_NATIVE_HEIGHT}p)' if REQUIRE_NATIVE_QUALITY else 'NO (accept any quality)'}")
     print(f"  • Upload chunk size: {chunk_display}")
     print(f"  • Video privacy: {privacy_display}")
     print(f"  • Archive file: {os.path.basename(ARCHIVE_FILE)}")
