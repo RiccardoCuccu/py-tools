@@ -7,50 +7,91 @@ to see the corresponding EU RDA percentage.
 
 Usage:
     python rda_calculator.py
+
+Notes:
+    - A comma is accepted as the decimal separator (e.g. 0,5).
+    - Blank fields clear their result; negative or non-numeric values are rejected.
 """
 
+import math
+from dataclasses import dataclass
 from tkinter import E, N, S, W, StringVar, Tk, Widget
 from tkinter import ttk
-
-# RDA reference values in milligrams (EU standard)
-VITAMIN_A_RDA_MG = 0.8
-VITAMIN_C_RDA_MG = 80.0
-IRON_RDA_MG = 14.0
-CALCIUM_RDA_MG = 800.0
 
 # Multiplier for converting a ratio to a percentage
 PERCENT_MULTIPLIER = 100.0
 
+# Result shown for text that is not a valid amount
+INVALID_INPUT_MESSAGE = "Invalid input"
+
+# Decimal places kept in the displayed percentage
+RESULT_DECIMALS = 2
+
 # Layout
 MAINFRAME_PADDING = "3 3 3 3"
 ENTRY_WIDTH = 7
+CELL_PADDING = 5
+INPUT_COLUMN = 1
+LABEL_COLUMN = 2
+RESULT_COLUMN = 3
+FIRST_ROW = 1
 
 
-def calculate(*args):
-    """Read mg input fields, compute RDA percentages, and update result variables."""
-    if mg_vitamin_a.get():
-        try:
-            rda_vitamin_a.set(str(round(float(mg_vitamin_a.get()) * PERCENT_MULTIPLIER / VITAMIN_A_RDA_MG, 2)))
-        except ValueError:
-            rda_vitamin_a.set("Invalid input")
+@dataclass(frozen=True)
+class Nutrient:
+    """A nutrient and its reference daily allowance in milligrams."""
 
-    if mg_vitamin_c.get():
-        try:
-            rda_vitamin_c.set(str(round(float(mg_vitamin_c.get()) * PERCENT_MULTIPLIER / VITAMIN_C_RDA_MG, 2)))
-        except ValueError:
-            rda_vitamin_c.set("Invalid input")
+    name: str
+    rda_mg: float
 
-    if mg_iron.get():
-        try:
-            rda_iron.set(str(round(float(mg_iron.get()) * PERCENT_MULTIPLIER / IRON_RDA_MG, 2)))
-        except ValueError:
-            rda_iron.set("Invalid input")
 
-    if mg_calcium.get():
-        try:
-            rda_calcium.set(str(round(float(mg_calcium.get()) * PERCENT_MULTIPLIER / CALCIUM_RDA_MG, 2)))
-        except ValueError:
-            rda_calcium.set("Invalid input")
+# RDA reference values in milligrams (EU standard)
+NUTRIENTS = (
+    Nutrient("Vitamin A", 0.8),
+    Nutrient("Vitamin C", 80.0),
+    Nutrient("Iron", 14.0),
+    Nutrient("Calcium", 800.0),
+)
+
+
+def parse_mg(text: str) -> float:
+    """
+    Parse a milligram amount typed by the user.
+
+    Accepts a decimal comma when the text has no decimal point.
+
+    Raises:
+        ValueError: the text is not a finite, non-negative number.
+    """
+    cleaned = text.strip()
+    if "," in cleaned and "." not in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    value = float(cleaned)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"Not a valid amount: {text!r}")
+    return value
+
+
+def mg_to_rda_percent(mg: float, rda_mg: float) -> float:
+    """Return mg as a percentage of the reference allowance rda_mg."""
+    return mg * PERCENT_MULTIPLIER / rda_mg
+
+
+def format_rda_result(text: str, rda_mg: float) -> str:
+    """Return the text to display for an input field: percentage, '' or an error."""
+    if not text.strip():
+        return ""
+    try:
+        percent = mg_to_rda_percent(parse_mg(text), rda_mg)
+    except ValueError:
+        return INVALID_INPUT_MESSAGE
+    return str(round(percent, RESULT_DECIMALS))
+
+
+def calculate(mg_vars, rda_vars):
+    """Read the mg input variables and update the matching RDA result variables."""
+    for nutrient, mg_var, rda_var in zip(NUTRIENTS, mg_vars, rda_vars):
+        rda_var.set(format_rda_result(mg_var.get(), nutrient.rda_mg))
 
 
 def create_entry_widget(parent, var, col, row):
@@ -62,9 +103,6 @@ def create_entry_widget(parent, var, col, row):
 
 def main():
     """Build and run the RDA calculator GUI."""
-    global mg_vitamin_a, mg_vitamin_c, mg_iron, mg_calcium
-    global rda_vitamin_a, rda_vitamin_c, rda_iron, rda_calcium
-
     root = Tk()
     root.title("Milligrams to RDA")
 
@@ -73,38 +111,37 @@ def main():
     mainframe.columnconfigure(0, weight=1)
     mainframe.rowconfigure(0, weight=1)
 
-    mg_vitamin_a = StringVar()
-    mg_vitamin_c = StringVar()
-    mg_iron = StringVar()
-    mg_calcium = StringVar()
-    rda_vitamin_a = StringVar()
-    rda_vitamin_c = StringVar()
-    rda_iron = StringVar()
-    rda_calcium = StringVar()
+    mg_vars = [StringVar() for _ in NUTRIENTS]
+    rda_vars = [StringVar() for _ in NUTRIENTS]
 
-    mg_vitamin_a_entry = create_entry_widget(mainframe, mg_vitamin_a, 1, 1)
-    create_entry_widget(mainframe, mg_vitamin_c, 1, 2)
-    create_entry_widget(mainframe, mg_iron, 1, 3)
-    create_entry_widget(mainframe, mg_calcium, 1, 4)
+    first_entry = None
+    for row, (nutrient, mg_var, rda_var) in enumerate(
+        zip(NUTRIENTS, mg_vars, rda_vars), start=FIRST_ROW
+    ):
+        entry = create_entry_widget(mainframe, mg_var, INPUT_COLUMN, row)
+        first_entry = first_entry or entry
+        ttk.Label(
+            mainframe, text=f"mg of {nutrient.name} is equal to an RDA of"
+        ).grid(column=LABEL_COLUMN, row=row, sticky=W)
+        ttk.Label(mainframe, textvariable=rda_var).grid(
+            column=RESULT_COLUMN, row=row, sticky=W+E
+        )
 
-    ttk.Label(mainframe, textvariable=rda_vitamin_a).grid(column=3, row=1, sticky=W+E)
-    ttk.Label(mainframe, textvariable=rda_vitamin_c).grid(column=3, row=2, sticky=W+E)
-    ttk.Label(mainframe, textvariable=rda_iron).grid(column=3, row=3, sticky=W+E)
-    ttk.Label(mainframe, textvariable=rda_calcium).grid(column=3, row=4, sticky=W+E)
+    def on_calculate(*_args):
+        """Recalculate all results (button click or Enter key)."""
+        calculate(mg_vars, rda_vars)
 
-    ttk.Label(mainframe, text="mg of Vitamin A is equal to an RDA of").grid(column=2, row=1, sticky=W)
-    ttk.Label(mainframe, text="mg of Vitamin C is equal to an RDA of").grid(column=2, row=2, sticky=W)
-    ttk.Label(mainframe, text="mg of Iron is equal to an RDA of").grid(column=2, row=3, sticky=W)
-    ttk.Label(mainframe, text="mg of Calcium is equal to an RDA of").grid(column=2, row=4, sticky=W)
-
-    ttk.Button(mainframe, text="Calculate", command=calculate).grid(column=3, row=5, sticky=W)
+    ttk.Button(mainframe, text="Calculate", command=on_calculate).grid(
+        column=RESULT_COLUMN, row=FIRST_ROW + len(NUTRIENTS), sticky=W
+    )
 
     for child in mainframe.winfo_children():
         if isinstance(child, Widget):
-            child.grid_configure(padx=5, pady=5)
+            child.grid_configure(padx=CELL_PADDING, pady=CELL_PADDING)
 
-    mg_vitamin_a_entry.focus()
-    root.bind("<Return>", calculate)
+    if first_entry is not None:
+        first_entry.focus()
+    root.bind("<Return>", on_calculate)
     root.mainloop()
 
 
