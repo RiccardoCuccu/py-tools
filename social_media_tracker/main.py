@@ -15,6 +15,7 @@ Notes:
 import calendar
 import json
 import os
+import re
 import time
 import traceback
 from datetime import datetime
@@ -41,6 +42,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, CONFIG_FILE)
 EXCEL_FILE = os.path.join(SCRIPT_DIR, EXCEL_FILE)
 SCHEDULER_POLL_INTERVAL_SECONDS = 60
+
+# Schedule validation
+VALID_SCHEDULE_MODES = ("daily", "weekly", "monthly")
+TIME_PATTERN = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+DATE_FORMAT = "%Y-%m-%d"
+ERROR_MARKER = "Error"
+WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 # Debug utilities
 
@@ -104,8 +112,34 @@ def load_config() -> Dict[str, Any]:
         create_default_config()
         raise FileNotFoundError(f"Please configure {CONFIG_FILE} first")
     
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{CONFIG_FILE} is not valid JSON: {e}") from e
+
+    validate_config(config)
+    return config
+
+def validate_config(config: Dict[str, Any]) -> None:
+    """Raise ValueError with a clear message if the schedule/profile settings are unusable."""
+    sched_config = config.get("schedules")
+    if not isinstance(sched_config, dict) or not isinstance(config.get("profiles"), dict):
+        raise ValueError("Config must contain 'schedules' and 'profiles' sections")
+
+    mode = sched_config.get("mode")
+    if mode not in VALID_SCHEDULE_MODES:
+        raise ValueError(f"schedules.mode must be one of {VALID_SCHEDULE_MODES}, got {mode!r}")
+
+    time_value = sched_config.get("time")
+    if not isinstance(time_value, str) or not TIME_PATTERN.fullmatch(time_value):
+        raise ValueError(f"schedules.time must be HH:MM (24-hour), got {time_value!r}")
+
+    if mode == "weekly":
+        weekly_day = sched_config.get("weekly_day")
+        if not isinstance(weekly_day, int) or isinstance(weekly_day, bool) \
+                or not 0 <= weekly_day < len(WEEKDAY_NAMES):
+            raise ValueError(f"schedules.weekly_day must be 0-6, got {weekly_day!r}")
 
 # Data collection
 
@@ -138,9 +172,9 @@ def collect_stats(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             if result.get("followers") is not None:
                 username_display = result.get("username", "Unknown")
                 followers = result.get("followers")
-                print(f"  ✓ {platform.title()}: {username_display} - {followers:,} followers")
+                print(f"  OK {platform.title()}: {username_display} - {followers:,} followers")
             else:
-                print(f"  ✗ {platform.title()}: Could not retrieve follower count")
+                print(f"  FAILED {platform.title()}: Could not retrieve follower count")
             
             stats[platform] = {
                 "username": result.get("username", ""),
@@ -166,9 +200,60 @@ def collect_stats(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 # Excel reporting
 
-def append_to_excel_history(stats: Dict[str, Dict[str, Any]]) -> None:
-    """Append follower statistics to separate sheets per platform in Excel file."""
-    date_str = datetime.now().strftime("%Y-%m-%d")
+def last_numeric_followers(ws: Worksheet) -> Optional[int]:
+    """Return the most recent numeric follower count in column D, skipping 'Error' rows."""
+    for row in range(ws.max_row, 1, -1):
+        value = ws.cell(row=row, column=4).value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+def period_key(day: datetime, mode: str) -> tuple:
+    """Return the schedule period a date belongs to: day, ISO week or month."""
+    if mode == "monthly":
+        return (day.year, day.month)
+    if mode == "weekly":
+        iso = day.isocalendar()
+        return (iso[0], iso[1])
+    return (day.year, day.month, day.day)
+
+def current_period_row(ws: Worksheet, mode: str) -> Optional[int]:
+    """Return the last row if it was recorded in the current period, else None.
+
+    Rows are chronological, so only the last row can belong to the current period.
+    Unparseable dates (hand-edited sheets) are treated as a different period.
+    """
+    if ws.max_row < 2:
+        return None
+    raw = ws.cell(row=ws.max_row, column=1).value
+    try:
+        recorded = datetime.strptime(str(raw), DATE_FORMAT)
+    except ValueError:
+        return None
+    if period_key(recorded, mode) == period_key(datetime.now(), mode):
+        return ws.max_row
+    return None
+
+def recorded_platforms(mode: str) -> set:
+    """Return the sheet names that already hold a successful row for the current period."""
+    if not os.path.exists(EXCEL_FILE):
+        return set()
+    wb = openpyxl.load_workbook(EXCEL_FILE, read_only=False)
+    done = set()
+    for ws in wb.worksheets:
+        row = current_period_row(ws, mode)
+        if row is not None and ws.cell(row=row, column=4).value != ERROR_MARKER:
+            done.add(ws.title)
+    return done
+
+def append_to_excel_history(stats: Dict[str, Dict[str, Any]], mode: Optional[str] = None) -> None:
+    """Append follower statistics to separate sheets per platform in Excel file.
+
+    With a schedule mode, at most one row per platform is kept per period (day, ISO
+    week or month): a period already holding a successful row is left untouched, and
+    an 'Error' row of the current period is replaced by the new result.
+    """
+    date_str = datetime.now().strftime(DATE_FORMAT)
     time_str = datetime.now().strftime("%H:%M:%S")
     
     if os.path.exists(EXCEL_FILE):
@@ -202,13 +287,18 @@ def append_to_excel_history(stats: Dict[str, Dict[str, Any]]) -> None:
         last_row = ws.max_row
 
         # Get previous value for change calculation
-        previous_followers: Optional[int] = None
-        if last_row > 1:
-            last_followers_cell = ws.cell(row=last_row, column=4)
-            if last_followers_cell and isinstance(last_followers_cell.value, int):
-                previous_followers = last_followers_cell.value
-        
+        previous_followers = last_numeric_followers(ws)
+
         row = last_row + 1
+        existing = current_period_row(ws, mode) if mode else None
+        if existing is not None:
+            if ws.cell(row=existing, column=4).value != ERROR_MARKER:
+                continue
+            # Replace the failed attempt of this period instead of adding a second row
+            row = existing
+            for col in range(1, 6):
+                ws.cell(row=row, column=col).value = None
+                ws.cell(row=row, column=col).font = Font()
         ws.cell(row=row, column=1, value=date_str)
         ws.cell(row=row, column=2, value=time_str)
         ws.cell(row=row, column=3, value=data["username"])
@@ -227,12 +317,15 @@ def append_to_excel_history(stats: Dict[str, Dict[str, Any]]) -> None:
                 elif change < 0:
                     change_cell.font = Font(color="FF0000")  # Red
         else:
-            ws.cell(row=row, column=4, value="Error")
+            ws.cell(row=row, column=4, value=ERROR_MARKER)
         
         for col in range(1, 6):
             ws.column_dimensions[get_column_letter(col)].width = 15
     
-    wb.save(EXCEL_FILE)
+    # Save to a temp file first so a crash mid-write cannot corrupt the history
+    tmp_file = EXCEL_FILE + ".tmp"
+    wb.save(tmp_file)
+    os.replace(tmp_file, EXCEL_FILE)
     print(f"History updated: {EXCEL_FILE}")
 
 # Scheduling
@@ -271,7 +364,13 @@ def job_runner() -> None:
     print(f"Running follower check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
     
-    stats = collect_stats(config)
+    # Startup and scheduled runs can fall in the same period: skip platforms already recorded
+    mode = config["schedules"]["mode"]
+    done = {name.lower() for name in recorded_platforms(mode)}
+    pending = {k: v for k, v in config["profiles"].items() if k.lower() not in done}
+    if done:
+        print(f"Already recorded this period, skipping: {', '.join(sorted(done))}")
+    stats = collect_stats({**config, "profiles": pending})
 
     print(f"\n{'='*60}")
     print("SUMMARY")
@@ -283,25 +382,34 @@ def job_runner() -> None:
             print(f"{platform.title():12} : {data.get('username', 'N/A'):25} - {'ERROR':>8}")
     print(f"{'='*60}\n")
     
-    append_to_excel_history(stats)
+    append_to_excel_history(stats, mode)
     
     print(f"{'='*60}")
     print("Job completed successfully!")
     print(f"{'='*60}\n")
+
+def safe_job_runner() -> None:
+    """Run job_runner, reporting any failure instead of killing the scheduler loop."""
+    try:
+        job_runner()
+    except Exception as e:
+        # A locked Excel file, bad config edit or scraper bug must not stop the daemon
+        print(f"\nJob failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
 def setup_schedule(config: Dict[str, Any]) -> None:
     """Setup scheduled jobs based on configuration."""
     sched_config = config["schedules"]
     
     # Schedule to check every day at specified time
-    schedule.every().day.at(sched_config["time"]).do(job_runner)
+    schedule.every().day.at(sched_config["time"]).do(safe_job_runner)
     
     if sched_config["mode"] == "daily":
         print(f"Scheduled: Daily at {sched_config['time']}")
     elif sched_config["mode"] == "monthly":
         print(f"Scheduled: Monthly (last day) at {sched_config['time']}")
     elif sched_config["mode"] == "weekly":
-        weekday_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][sched_config["weekly_day"]]
+        weekday_name = WEEKDAY_NAMES[sched_config["weekly_day"]]
         print(f"Scheduled: Weekly ({weekday_name}) at {sched_config['time']}")
 
 # Main
@@ -322,8 +430,8 @@ def main() -> None:
         
         # Run immediately once on startup (if conditions met)
         print("\nRunning initial check...")
-        job_runner()
-        
+        safe_job_runner()
+
         print("\nWaiting for scheduled runs...")
         print("Press Ctrl+C to stop\n")
         

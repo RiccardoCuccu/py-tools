@@ -9,7 +9,7 @@ import os
 import re
 import time
 from typing import Optional, Dict
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -28,24 +28,32 @@ def debug_log(message: str, debug_mode: bool = False) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         print(f"[DEBUG {timestamp}] Threads: {message}")
 
-def extract_hidden_data(html: str, debug_mode: bool = False) -> Optional[dict]:
-    """Extract hidden JSON data from Threads page"""
-    # Look for the hidden data script tag
-    pattern = r'<script type="application/json" data-content-len="[^"]*" data-sjs>\s*({.+?})\s*</script>'
-    match = re.search(pattern, html, re.DOTALL)
-    
-    if not match:
+def extract_all_hidden_data(html: str, debug_mode: bool = False) -> list[dict]:
+    """Extract every parsable hidden JSON object embedded in the Threads page."""
+    # The tempered dot keeps one block from running on into the next <script>
+    pattern = r'<script type="application/json" data-content-len="[^"]*" data-sjs>\s*({(?:(?!</script>).)*?})\s*</script>'
+    results: list[dict] = []
+
+    for match in re.finditer(pattern, html, re.DOTALL):
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError as e:
+            # One malformed block must not hide the valid ones that follow
+            debug_log(f"JSON decode error: {e}", debug_mode)
+            continue
+        if isinstance(data, dict):
+            results.append(data)
+
+    if not results:
         debug_log("Hidden JSON data not found", debug_mode)
-        return None
-    
-    try:
-        json_str = match.group(1)
-        data = json.loads(json_str)
-        debug_log("Successfully parsed hidden JSON data", debug_mode)
-        return data
-    except json.JSONDecodeError as e:
-        debug_log(f"JSON decode error: {e}", debug_mode)
-        return None
+    else:
+        debug_log(f"Parsed {len(results)} hidden JSON block(s)", debug_mode)
+    return results
+
+def extract_hidden_data(html: str, debug_mode: bool = False) -> Optional[dict]:
+    """Extract the first hidden JSON object from a Threads page, or None."""
+    blocks = extract_all_hidden_data(html, debug_mode)
+    return blocks[0] if blocks else None
 
 def find_follower_count(data: dict, debug_mode: bool = False) -> Optional[int]:
     """Recursively search for follower count in the data structure"""
@@ -96,11 +104,14 @@ def get_followers(url: str, max_retries: int = 3, retry_delay: int = 5, debug_mo
         Dict with 'username' (str) and 'followers' (int or None) keys
     """
     username = extract_username(url)
-    
+    if not username:
+        print(f"Threads: Could not extract a username from URL '{url}'.")
+        return {"username": "", "followers": None}
+
     for attempt in range(max_retries):
         try:
             # Build Threads URL
-            fetch_url = f"https://www.threads.com/@{username}"
+            fetch_url = f"https://www.threads.com/@{quote(username, safe='')}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -117,11 +128,12 @@ def get_followers(url: str, max_retries: int = 3, retry_delay: int = 5, debug_mo
             debug_log(f"Response status {response.status_code}, length {len(response.text)}", debug_mode)
             
             # Extract hidden JSON data
-            data = extract_hidden_data(response.text, debug_mode)
+            blocks = extract_all_hidden_data(response.text, debug_mode)
+            data = blocks[0] if blocks else None
             
-            if data:
-                # Search for follower count in the data
-                follower_count = find_follower_count(data, debug_mode)
+            for block in blocks:
+                # Search for follower count in each embedded data block
+                follower_count = find_follower_count(block, debug_mode)
                 
                 if follower_count is not None:
                     debug_log(f"Found {follower_count} followers for @{username}", debug_mode)

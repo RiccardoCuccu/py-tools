@@ -7,7 +7,7 @@ import json
 import re
 import time
 from typing import Optional, Dict
-from urllib.parse import urlparse, ParseResult
+from urllib.parse import quote, urlparse, ParseResult
 
 import requests
 
@@ -97,7 +97,10 @@ def _fetch_with_api(username: str, debug_mode: bool = False) -> Optional[int]:
     Uses the i.instagram.com endpoint with the public app ID header.
     Returns follower count or None if blocked or unavailable.
     """
-    api_url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
+    api_url = (
+        "https://i.instagram.com/api/v1/users/web_profile_info/"
+        f"?username={quote(username, safe='')}"
+    )
     api_headers = {**HEADERS, "x-ig-app-id": INSTAGRAM_APP_ID}
     try:
         debug_log(f"Fetching via API: {api_url}", debug_mode)
@@ -232,6 +235,9 @@ def get_followers(url: str, max_retries: int = 3, retry_delay: int = 5, debug_mo
         Dict with 'username' (str) and 'followers' (int or None) keys
     """
     username = extract_username(url)
+    if not username:
+        print(f"Instagram: Could not extract a username from URL '{url}'.")
+        return {"username": "", "followers": None}
 
     if not SELENIUM_AVAILABLE:
         print("Warning: selenium not installed - browser fallback unavailable.")
