@@ -7,18 +7,29 @@ and saves the result as a .txt file next to the original PDF.
 
 Usage:
     python pdf_highlight_extractor.py
+
+Notes:
+    - An existing .txt file with the same name is only overwritten after confirmation.
+    - Password-protected PDFs are rejected with an error message.
 """
 
 import tkinter as tk
-from tkinter import filedialog, scrolledtext
+from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext
 
 import fitz  # PyMuPDF
 
 # PyMuPDF annotation type code for highlight annotations
 HIGHLIGHT_ANNOT_TYPE = 8
 
+# A highlight quad is described by four corner points
+POINTS_PER_QUAD = 4
+
 # Main window geometry
 WINDOW_GEOMETRY = "500x300"
+
+# Output file extension
+OUTPUT_SUFFIX = ".txt"
 
 
 class PDFHighlightExtractor(tk.Tk):
@@ -52,39 +63,89 @@ class PDFHighlightExtractor(tk.Tk):
 
     def extract_highlights(self):
         """Run highlight extraction on the selected PDF and report the output path."""
-        if self.pdf_path:
-            output_file = self.pdf_path.rsplit(".", 1)[0] + ".txt"
-            extract_highlighted_text(self.pdf_path, output_file)
-            self.text_area.insert(tk.END, f"Highlights saved to: {output_file}\n")
-        else:
+        if not self.pdf_path:
             self.text_area.insert(tk.END, "No PDF file selected.\n")
+            return
+
+        output_file = default_output_path(self.pdf_path)
+        if output_file.exists() and not messagebox.askyesno(
+            "Overwrite file", f"{output_file.name} already exists. Overwrite it?"
+        ):
+            self.text_area.insert(tk.END, "Extraction cancelled, existing file kept.\n")
+            return
+
+        try:
+            count = extract_highlighted_text(self.pdf_path, output_file)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.text_area.insert(tk.END, f"ERROR: {exc}\n")
+            return
+        self.text_area.insert(
+            tk.END, f"{count} highlight(s) saved to: {output_file}\n"
+        )
+
+
+def default_output_path(pdf_path):
+    """Return the .txt path next to pdf_path, replacing only the final extension."""
+    return Path(pdf_path).with_suffix(OUTPUT_SUFFIX)
+
+
+def _quad_texts(page, vertices):
+    """Return the cleaned text under each quad of a highlight, in quad order."""
+    texts = []
+    # Ignore trailing points that do not form a complete quad
+    usable = len(vertices) - len(vertices) % POINTS_PER_QUAD
+    for i in range(0, usable, POINTS_PER_QUAD):
+        quad = fitz.Quad(vertices[i: i + POINTS_PER_QUAD])
+        text = page.get_text("text", clip=quad.rect)
+        # Collapse line breaks and runs of spaces inside a single quad
+        text = " ".join(text.split())
+        if text:
+            texts.append(text)
+    return texts
+
+
+def collect_highlights(pdf_path):
+    """
+    Return the highlighted text of pdf_path, one string per highlight annotation.
+
+    Highlights are listed in page order. Each annotation's quads are used to clip
+    the page text precisely. Highlights that cover no text are skipped.
+
+    Raises:
+        ValueError: the PDF is password protected.
+        RuntimeError: the file cannot be opened as a PDF.
+    """
+    highlights = []
+    with fitz.open(pdf_path) as doc:
+        if doc.needs_pass:
+            raise ValueError(f"PDF is password protected: {pdf_path}")
+        for page in doc:
+            for annot in page.annots() or []:
+                if annot.type[0] != HIGHLIGHT_ANNOT_TYPE:
+                    continue
+                vertices = annot.vertices
+                if not vertices:
+                    continue
+                text = " ".join(_quad_texts(page, vertices))
+                if text:
+                    highlights.append(text)
+    return highlights
 
 
 def extract_highlighted_text(pdf_path, output_file):
     """
     Extract all highlighted text from pdf_path and write it to output_file.
 
-    Each highlight annotation's quads are used to clip the page text precisely.
+    Each highlight is written as its own paragraph. Nothing is written when the
+    PDF cannot be read. Returns the number of highlights written.
     """
-    highlighted_texts = []
-    with fitz.open(pdf_path) as doc:
-        for page in doc:
-            annotations = page.annots()
-            if annotations:
-                for annot in annotations:
-                    if annot.type[0] == HIGHLIGHT_ANNOT_TYPE:
-                        annotation_text = ""
-                        quads = annot.vertices
-                        for i in range(0, len(quads), 4):  # type: ignore[arg-type]
-                            quad = fitz.Quad(quads[i: i + 4])  # type: ignore[index]
-                            rect = quad.rect
-                            text = page.get_text("text", clip=rect).strip()  # type: ignore[union-attr]
-                            annotation_text += text + " "
-                        highlighted_texts.append(annotation_text + "\n")
+    highlights = collect_highlights(pdf_path)
 
     with open(output_file, "w", encoding="utf-8") as file:
-        for text in highlighted_texts:
-            file.write(text + "\n")
+        for text in highlights:
+            file.write(text + "\n\n")
+
+    return len(highlights)
 
 
 if __name__ == "__main__":
