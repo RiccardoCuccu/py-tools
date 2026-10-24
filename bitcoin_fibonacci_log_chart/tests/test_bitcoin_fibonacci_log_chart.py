@@ -1,5 +1,5 @@
-"""Tests for bitcoin_fibonacci_log_chart: price-file parsing and validation, Fibonacci
-level math, halving filtering, chart construction (headless Agg backend), and main().
+"""Tests for bitcoin_fibonacci_log_chart: price-file parsing and validation, Golden Ratio
+Multiplier band math, halving filtering, chart construction (headless Agg backend), and main().
 The real market-price.json is never read: every test builds its own data in tmp_path.
 """
 
@@ -15,9 +15,14 @@ from pathlib import Path
 from typing import cast
 
 import matplotlib
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
+from matplotlib.text import Annotation
 
 import bitcoin_fibonacci_log_chart as bfc
 
@@ -38,6 +43,31 @@ def series(*prices: float, start_ms: int = 0) -> dict:
             {"x": start_ms + i * MS_PER_DAY, "y": p} for i, p in enumerate(prices)
         ]
     }
+
+
+def end_labels(ax: Axes) -> list[str]:
+    """Return the texts of the end-of-line labels, in drawing order."""
+    return [t.get_text() for t in ax.texts if isinstance(t, Annotation)]
+
+
+def label_display_ys(ax: Axes) -> list[float]:
+    """Return the sorted display y of every end label, using each label's real x."""
+    ys = []
+    for t in ax.texts:
+        if isinstance(t, Annotation):
+            point = np.array([[float(mdates.date2num(t.xy[0])), float(t.xy[1])]])
+            ys.append(float(ax.transData.transform(point)[0, 1]))
+    return sorted(ys)
+
+
+def halving_texts(ax: Axes) -> list[str]:
+    """Return the texts of the halving date markers."""
+    return [t.get_text() for t in ax.texts if not isinstance(t, Annotation)]
+
+
+def line_by_label(ax: Axes, label: str) -> Line2D:
+    """Return the plotted line carrying the given label."""
+    return next(line for line in ax.lines if line.get_label() == label)
 
 
 @pytest.fixture(autouse=True)
@@ -116,25 +146,54 @@ class TestLoadPriceData:
             bfc.load_price_data(tmp_path / "missing.json")
 
 
-class TestFibonacciPrices:
-    def test_levels_measured_down_from_high(self):
-        prices = bfc.compute_fibonacci_prices(100.0, 0.0)
-        assert prices == pytest.approx([76.4, 61.8, 50.0, 38.2, 21.4])
+class TestGoldenRatioBands:
+    WINDOW = 4
 
-    def test_nonzero_low(self):
-        prices = bfc.compute_fibonacci_prices(200.0, 100.0, [0.5])
-        assert prices == [150.0]
+    def _frame(self, prices, start="2020-01-01"):
+        dates = pd.date_range(start, periods=len(prices), freq="D")
+        return pd.DataFrame({"Date": dates, "Close": prices})
 
-    def test_flat_range_collapses_to_single_price(self):
-        assert bfc.compute_fibonacci_prices(50.0, 50.0) == [50.0] * len(bfc.FIBONACCI_LEVELS)
+    def test_warm_up_is_nan_then_mean(self):
+        bands = bfc.compute_golden_ratio_bands(
+            self._frame([1.0, 2.0, 3.0, 4.0, 5.0]), window=self.WINDOW, multipliers=[2]
+        )
+        assert bands["MA"].iloc[: self.WINDOW - 1].isna().all()
+        assert bands["MA"].iloc[self.WINDOW - 1] == pytest.approx(2.5)
+        assert bands["MA"].iloc[self.WINDOW] == pytest.approx(3.5)
 
-    def test_levels_are_ordered_descending_and_within_range(self):
-        prices = bfc.compute_fibonacci_prices(1000.0, 10.0)
-        assert prices == sorted(prices, reverse=True)
-        assert all(10.0 <= p <= 1000.0 for p in prices)
+    def test_constant_price_gives_scaled_bands(self):
+        bands = bfc.compute_golden_ratio_bands(
+            self._frame([10.0] * 6), window=self.WINDOW, multipliers=[1.6, 5]
+        )
+        last = bands.iloc[-1]
+        assert last["MA"] == pytest.approx(10.0)
+        assert last[1.6] == pytest.approx(16.0)
+        assert last[5] == pytest.approx(50.0)
 
-    def test_default_levels_are_standard(self):
-        assert bfc.FIBONACCI_LEVELS == [0.236, 0.382, 0.5, 0.618, 0.786]
+    def test_gaps_are_resampled_to_daily(self):
+        frame = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2020-01-01", "2020-01-04", "2020-01-05"]),
+                "Close": [1.0, 4.0, 5.0],
+            }
+        )
+        bands = bfc.compute_golden_ratio_bands(frame, window=self.WINDOW, multipliers=[])
+        assert len(bands) == 5
+        assert bands["Date"].tolist() == list(pd.date_range("2020-01-01", periods=5))
+        # Days 2 and 3 carry the last known price forward: mean(1, 1, 1, 4)
+        assert bands["MA"].iloc[3] == pytest.approx(1.75)
+        assert bands["MA"].iloc[:3].isna().all()
+
+    def test_default_multipliers(self):
+        assert bfc.GOLDEN_RATIO_MULTIPLIERS == [1.6, 2, 3, 5, 8, 13, 21]
+        assert bfc.MOVING_AVERAGE_DAYS == 350
+        bands = bfc.compute_golden_ratio_bands(self._frame([1.0, 2.0]), window=2)
+        assert list(bands.columns) == ["Date", "MA", *bfc.GOLDEN_RATIO_MULTIPLIERS]
+
+    def test_short_data_is_all_nan(self):
+        bands = bfc.compute_golden_ratio_bands(self._frame([1.0, 2.0, 3.0]), window=self.WINDOW)
+        assert bool(bands["MA"].isna().all())
+        assert bool(bands[21].isna().all())
 
 
 class TestHalvings:
@@ -163,31 +222,220 @@ class TestBuildChart:
     def _df(self, tmp_path, payload):
         return bfc.load_price_data(write_json(tmp_path / "p.json", payload))
 
-    def test_log_scale_and_fib_lines(self, tmp_path):
-        df = self._df(tmp_path, series(10.0, 100.0, 1000.0))
-        fig = bfc.build_chart(df)
-        ax = fig.axes[0]
+    def _long_axes(self, tmp_path):
+        days = bfc.MOVING_AVERAGE_DAYS + 10
+        df = self._df(tmp_path, series(*[10.0 + i for i in range(days)]))
+        return bfc.build_chart(df).axes[0]
+
+    def test_log_scale_and_no_legend(self, tmp_path):
+        ax = self._long_axes(tmp_path)
         assert ax.get_yscale() == "log"
-        legend = ax.get_legend()
-        assert legend is not None
-        legend_labels = [t.get_text() for t in legend.get_texts()]
-        assert len([lbl for lbl in legend_labels if lbl.startswith("Fib ")]) == len(
-            bfc.FIBONACCI_LEVELS
-        )
-        assert "Fib 23.6% (766 USD)" in legend_labels
+        assert ax.get_legend() is None
+
+    def test_one_end_label_per_line_with_long_data(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        labels = end_labels(ax)
+        assert len(labels) == 2 + len(bfc.GOLDEN_RATIO_MULTIPLIERS)
+        assert labels[0].startswith("BTC  $")
+        assert any(t.startswith(f"{bfc.MOVING_AVERAGE_DAYS}DMA  $") for t in labels)
+        assert any(t.startswith("x1.6  $") for t in labels)
+        assert any(t.startswith("x21  $") for t in labels)
+        assert halving_texts(ax) == []
+
+    def test_short_series_draws_price_and_btc_label_only(self, tmp_path):
+        df = self._df(tmp_path, series(10.0, 100.0, 1000.0))
+        ax = bfc.build_chart(df).axes[0]
+        assert len(ax.lines) == 1
+        assert end_labels(ax) == ["BTC  $1K"]
+
+    def test_golden_band_is_solid_and_thickest(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        golden = line_by_label(ax, "x1.6")
+        assert golden.get_linestyle() == "-"
+        assert golden.get_color() == bfc.GOLDEN_BAND_COLOR
+        others = [
+            line_by_label(ax, f"x{m:g}")
+            for m in bfc.GOLDEN_RATIO_MULTIPLIERS
+            if m != bfc.GOLDEN_RATIO
+        ]
+        for line in others:
+            assert line.get_linestyle() == "--"
+            assert line.get_linewidth() < golden.get_linewidth()
+            assert line.get_zorder() < golden.get_zorder()
+        price = line_by_label(ax, "BTC")
+        assert golden.get_zorder() < price.get_zorder()
+
+    def test_band_colors_match_non_golden_multipliers(self):
+        others = [m for m in bfc.GOLDEN_RATIO_MULTIPLIERS if m != bfc.GOLDEN_RATIO]
+        assert len(bfc.BAND_COLORS) == len(others)
+        assert bfc.GOLDEN_BAND_COLOR not in bfc.BAND_COLORS
+        assert len(set(bfc.BAND_COLORS)) == len(bfc.BAND_COLORS)
+
+    def test_moving_average_is_grey_dashed(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        line = line_by_label(ax, f"{bfc.MOVING_AVERAGE_DAYS}DMA")
+        assert line.get_color() == bfc.MOVING_AVERAGE_COLOR
+        assert line.get_linestyle() == "--"
+
+    def test_axes_are_clean(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        assert not ax.spines["top"].get_visible()
+        assert not ax.spines["right"].get_visible()
+        assert not ax.xaxis.get_gridlines()[0].get_visible()
+        assert ax.yaxis.get_gridlines()[0].get_visible()
+        assert ax.yaxis.get_major_formatter()(1000.0, 0) == "$1K"
+
+    def test_end_labels_do_not_overlap(self, tmp_path):
+        days = bfc.MOVING_AVERAGE_DAYS + 10
+        fig = bfc.build_chart(self._df(tmp_path, series(*[10.0 + i for i in range(days)])))
+        ax = fig.axes[0]
+        ys = label_display_ys(ax)
+        min_gap = bfc.END_LABEL_FONTSIZE * bfc.END_LABEL_GAP_FACTOR * fig.dpi / bfc.POINTS_PER_INCH
+        assert all(b - a >= min_gap - 1e-6 for a, b in zip(ys, ys[1:]))
 
     def test_halving_markers_only_when_in_data_range(self, tmp_path):
         inside = self._df(tmp_path, series(1.0, 2.0, 3.0, start_ms=EPOCH_2012_12_01_MS - 5 * MS_PER_DAY))
         fig = bfc.build_chart(inside)
-        texts = [t.get_text() for t in fig.axes[0].texts]
-        assert texts == ["2012-11-28"]
+        assert halving_texts(fig.axes[0]) == ["2012-11-28"]
 
         outside = self._df(tmp_path, series(1.0, 2.0, start_ms=EPOCH_2012_12_01_MS))
-        assert list(bfc.build_chart(outside).axes[0].texts) == []
+        assert halving_texts(bfc.build_chart(outside).axes[0]) == []
 
     def test_single_point_does_not_crash(self, tmp_path):
         df = self._df(tmp_path, series(42.0))
-        assert bfc.build_chart(df).axes
+        ax = bfc.build_chart(df).axes[0]
+        assert len(ax.images) == 0
+        assert len(ax.lines) == 1
+        assert end_labels(ax) == ["BTC  $42"]
+
+    def test_narrow_range_still_shows_dollar_labels(self, tmp_path):
+        prices = [45_000.0 + 500.0 * i for i in range(100)]
+        fig = bfc.build_chart(self._df(tmp_path, series(*prices)))
+        ax = fig.axes[0]
+        fig.canvas.draw()
+        texts = [
+            t.get_text()
+            for t in ax.get_yticklabels() + ax.get_yticklabels(minor=True)
+            if t.get_text()
+        ]
+        assert len(texts) >= 2
+        assert all(text.startswith("$") for text in texts)
+
+    def test_wide_range_has_no_minor_labels(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        ax.figure.canvas.draw()
+        assert [t for t in ax.get_yticklabels(minor=True) if t.get_text()] == []
+
+    def test_end_labels_stay_inside_axes_near_top_edge(self):
+        fig, ax = plt.subplots()
+        ax.plot(np.array(["2020-01-01", "2020-01-02"], dtype="datetime64[D]"), [1, 1])
+        ax.set_yscale("log")
+        ax.set_ylim(1, 1000)
+        fig.canvas.draw()
+        top = [990.0, 995.0, 998.0, 999.0, 1000.0]
+        x = dt.datetime(2020, 1, 2)
+        bfc._add_end_labels(ax, [bfc.EndLabel(x, y, f"L{y}", "black") for y in top])
+        ys = label_display_ys(ax)
+        min_gap = bfc.END_LABEL_FONTSIZE * bfc.END_LABEL_GAP_FACTOR * fig.dpi / bfc.POINTS_PER_INCH
+        assert ys[-1] <= ax.bbox.y1 + 1e-6
+        assert ys[0] >= ax.bbox.y0
+        assert all(b - a >= min_gap - 1e-6 for a, b in zip(ys, ys[1:]))
+
+    def test_gradient_fill_is_one_clipped_image(self, tmp_path):
+        df = self._df(tmp_path, series(10.0, 100.0, 1000.0))
+        ax = bfc.build_chart(df).axes[0]
+        assert len(ax.images) == 1
+        image = ax.images[0]
+        assert image.get_clip_path() is not None
+        assert image.get_zorder() < ax.lines[0].get_zorder()
+
+    def test_gradient_alpha_fades_downward(self, tmp_path):
+        df = self._df(tmp_path, series(10.0, 100.0, 1000.0))
+        image = bfc.build_chart(df).axes[0].images[0]
+        alphas = np.asarray(image.get_array())[:, 0, -1]
+        assert alphas[0] == pytest.approx(bfc.PRICE_FILL_TOP_ALPHA)
+        assert alphas[-1] == pytest.approx(bfc.PRICE_FILL_BOTTOM_ALPHA)
+        assert bool((alphas[:-1] >= alphas[1:]).all())
+
+    def test_gradient_fill_keeps_limits_and_btc_label(self, tmp_path):
+        df = self._df(tmp_path, series(10.0, 100.0, 1000.0))
+        ax = bfc.build_chart(df).axes[0]
+        floor, ceiling = ax.get_ylim()
+        assert floor <= 10.0 and ceiling >= 1000.0
+        assert end_labels(ax) == ["BTC  $1K"]
+
+    def test_gradient_fill_with_full_band_set_keeps_labels(self, tmp_path):
+        ax = self._long_axes(tmp_path)
+        assert len(ax.images) == 1
+        assert len(end_labels(ax)) == 2 + len(bfc.GOLDEN_RATIO_MULTIPLIERS)
+
+
+class TestFormatDollars:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (0.1, "$0.10"),
+            (1, "$1"),
+            (100, "$100"),
+            (1000, "$1K"),
+            (83_400, "$83.4K"),
+            (125_000, "$125K"),
+            (1e6, "$1M"),
+            (999_999, "$1M"),
+            (999.5, "$1K"),
+            (999.4, "$999"),
+            (999_500, "$1M"),
+            (999_499, "$999K"),
+            (999_500_000, "$1B"),
+            (1e9, "$1B"),
+            (2.5e9, "$2.5B"),
+            (1e12, "$1000B"),
+            (0.9999, "$1"),
+            (0.999, "$1"),
+            (0.5, "$0.50"),
+            (0, "$0"),
+            (-5, "$0"),
+        ],
+    )
+    def test_compact_values(self, value, expected):
+        assert bfc.format_dollars(value) == expected
+
+    def test_tick_position_argument_is_accepted(self):
+        assert bfc.format_dollars(10_000, 3) == "$10K"
+
+
+class TestSpreadLabelPositions:
+    GAP = 10.0
+
+    def test_separated_positions_are_unchanged(self):
+        positions = [0.0, 25.0, 100.0]
+        assert bfc._spread_label_positions(positions, self.GAP) == positions
+
+    def test_overlapping_positions_end_up_min_gap_apart(self):
+        result = bfc._spread_label_positions([50.0, 52.0, 51.0, 80.0], self.GAP)
+        ordered = sorted(result)
+        assert all(b - a >= self.GAP - 1e-9 for a, b in zip(ordered, ordered[1:]))
+
+    def test_output_order_matches_input_order(self):
+        positions = [52.0, 50.0, 80.0, 51.0]
+        result = bfc._spread_label_positions(positions, self.GAP)
+        assert np.argsort(result).tolist() == np.argsort(positions).tolist()
+
+    def test_cluster_stays_centred_on_original_positions(self):
+        result = bfc._spread_label_positions([50.0, 50.0], self.GAP)
+        assert sorted(result) == pytest.approx([45.0, 55.0])
+
+    def test_chain_merge_pulls_in_the_next_neighbour(self):
+        # [0, 9] collide, the merged block then reaches 18 and absorbs it too
+        result = bfc._spread_label_positions([0.0, 9.0, 18.0], self.GAP)
+        assert result == pytest.approx([-1.0, 9.0, 19.0])
+
+    def test_ties_are_split_in_input_order(self):
+        result = bfc._spread_label_positions([50.0, 50.0, 50.0], self.GAP)
+        assert result == pytest.approx([40.0, 50.0, 60.0])
+
+    def test_empty_input(self):
+        assert bfc._spread_label_positions([], self.GAP) == []
 
 
 class FakeResponse:

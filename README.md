@@ -10,7 +10,7 @@ Each tool is self-contained and uses its own `.venv` virtual environment inside 
 
 - **[amazon_product_info](https://github.com/RiccardoCuccu/py-tools/blob/main/amazon_product_info/)** - Tool to extract prices, names, and images from Amazon product URLs using PA-API, HTML parsing, and browser automation.
 
-- **[bitcoin_fibonacci_log_chart](https://github.com/RiccardoCuccu/py-tools/blob/main/bitcoin_fibonacci_log_chart/)** - Visualization tool that plots Bitcoin's historical price on a logarithmic scale with Fibonacci retracement levels and halving events.
+- **[bitcoin_fibonacci_log_chart](https://github.com/RiccardoCuccu/py-tools/blob/main/bitcoin_fibonacci_log_chart/)** - Visualization tool that plots Bitcoin's historical price on a logarithmic scale with the Golden Ratio Multiplier bands and halving events.
 
 - **[find_duplicates](https://github.com/RiccardoCuccu/py-tools/blob/main/find_duplicates/)** - Script to find and remove duplicate files inside a folder by comparing SHA-256 hashes.
 
