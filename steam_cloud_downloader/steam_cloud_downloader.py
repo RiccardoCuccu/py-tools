@@ -31,6 +31,8 @@ HTTP_OK = 200
 
 # Download settings
 DOWNLOAD_CHUNK_SIZE = 8192
+REQUEST_TIMEOUT_SECONDS = 30  # Per-request timeout for pages and file downloads
+PART_FILE_SUFFIX = ".part"  # Temporary suffix while a file is being downloaded
 
 # Minimum number of table cells expected in a file row
 MIN_FILE_ROW_CELLS = 5
@@ -40,6 +42,16 @@ TIMEOUT_SECONDS = 300  # Seconds to wait for the user to complete manual login
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STEAM_SAVES_ROOT = os.path.join(SCRIPT_DIR, "steam_saves")
+
+# Characters illegal in Windows file names, plus path separators and control chars
+UNSAFE_FILE_NAME_CHARS = re.compile(r'[\\/*?:"<>|\x00-\x1f]')
+
+# Windows reserved device names that cannot be used as file names
+WINDOWS_RESERVED_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
 
 
 def snake_case(text: str) -> str:
@@ -54,12 +66,54 @@ def snake_case(text: str) -> str:
     return text.strip("_")
 
 
-def login_with_selenium():
+def get_game_folder_name(raw_game_name: str, appid: str) -> str:
+    """Return a safe snake_case folder name, falling back to app_<appid> if empty."""
+    return snake_case(raw_game_name) or f"app_{appid}"
+
+
+def sanitize_file_name(file_name: str) -> str:
+    """
+    Turn a file name scraped from the Steam page into a safe single path component.
+
+    Replaces path separators and characters illegal on Windows, strips trailing dots
+    and spaces, and neutralises "." / ".." and Windows reserved device names so the
+    result can never escape the target folder. Returns "" if nothing usable remains.
+    """
+    cleaned = UNSAFE_FILE_NAME_CHARS.sub("_", file_name).strip().rstrip(". ")
+    if not cleaned:
+        return ""
+    if cleaned.split(".")[0].lower() in WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned
+
+
+def unique_file_name(file_name: str, used_names: set[str]) -> str:
+    """
+    Return file_name, or a numbered variant if it collides (case-insensitively).
+
+    Sanitising can map distinct remote names onto the same local name; without this
+    the later download would silently overwrite the earlier one. The chosen name is
+    recorded in used_names.
+    """
+    stem, dot, ext = file_name.rpartition(".")
+    if not dot:
+        stem, ext = file_name, ""
+    candidate = file_name
+    counter = 1
+    while candidate.lower() in used_names:
+        counter += 1
+        candidate = f"{stem}_{counter}{dot}{ext}"
+    used_names.add(candidate.lower())
+    return candidate
+
+
+def login_with_selenium() -> list[dict]:
     """
     Open the Steam login page in Chrome and wait for the user to log in manually.
 
     Waits up to TIMEOUT_SECONDS for the URL to change away from /login (indicating
-    success including 2FA), then captures and returns session cookies as a dict.
+    success including 2FA), then captures and returns the browser cookies (with
+    their domain and path) as a list of dicts.
     """
     driver = ChromeDriver()
 
@@ -78,25 +132,40 @@ def login_with_selenium():
         except TimeoutException:
             raise TimeoutException(
                 "Timed out waiting for manual login. Browser will be closed."
-            )
+            ) from None
 
         cookies = driver.get_cookies()
         if not cookies:
-            raise Exception(
+            raise RuntimeError(
                 "No cookies were retrieved. Ensure you completed the login successfully."
             )
 
-        session_cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
-
-        print("\n[DEBUG] Retrieved cookies from Selenium:")
-        for k, v in session_cookies.items():
-            print(f"  {k} = {v}")
-
+        # Cookie values are session credentials: never print them
         print("\nCookies retrieved successfully. Closing the browser now.")
-        return session_cookies
+        return cookies
 
     finally:
         driver.quit()
+
+
+def build_session(cookies: list[dict]) -> requests.Session:
+    """Return a requests session carrying the browser cookies with domain and path."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        )
+    })
+    for cookie in cookies:
+        # Keep domain and path so the session cookies are only sent to Steam hosts
+        session.cookies.set(
+            cookie["name"],
+            cookie["value"],
+            domain=cookie.get("domain", ""),
+            path=cookie.get("path", "/"),
+        )
+    return session
 
 
 def get_appids_from_remotestorage(session):
@@ -104,7 +173,7 @@ def get_appids_from_remotestorage(session):
     Scrape the Steam Remote Storage page and return a sorted list of app ID strings.
     """
     main_url = "https://store.steampowered.com/account/remotestorage"
-    resp = session.get(main_url)
+    resp = session.get(main_url, timeout=REQUEST_TIMEOUT_SECONDS)
     if resp.status_code != HTTP_OK:
         print("[ERROR] Could not load the main remotestorage page.")
         return []
@@ -134,16 +203,45 @@ def folder_has_any_file(folder_path: str) -> bool:
     return False
 
 
+def download_file(session, file_url: str, file_path: str) -> bool:
+    """
+    Download file_url to file_path via a temporary .part file.
+
+    The final file only appears once the transfer is complete, so an interrupted
+    download never leaves a truncated save that a later run would treat as valid.
+    Returns True on success; failures are reported and return False.
+    """
+    part_path = file_path + PART_FILE_SUFFIX
+    try:
+        with session.get(
+            file_url, stream=True, timeout=REQUEST_TIMEOUT_SECONDS
+        ) as file_response:
+            if file_response.status_code != HTTP_OK:
+                print(f"  -> Error {file_response.status_code} downloading {file_url}")
+                return False
+            with open(part_path, "wb") as f:
+                for chunk in file_response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                    f.write(chunk)
+        os.replace(part_path, file_path)
+        return True
+    except (requests.RequestException, OSError) as exc:
+        print(f"  -> Error downloading to {file_path}: {exc}")
+        if os.path.exists(part_path):
+            os.remove(part_path)
+        return False
+
+
 def download_saves_for_app(session, appid):
     """
     Download all save files for appid into steam_saves/<snake_case_game_name>/.
 
-    Skips the download entirely if the target folder already contains files.
+    Skips the download entirely if the target folder already contains files. If any
+    file fails, the partial folder is removed so the next run retries the whole game.
     """
     base_url = "https://store.steampowered.com/account/remotestorageapp/"
     url = f"{base_url}?appid={appid}"
     print(f"\n[DEBUG] Requesting page for appid={appid}: {url}")
-    response = session.get(url)
+    response = session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
     print("[DEBUG] Response code:", response.status_code)
 
     if response.status_code != HTTP_OK:
@@ -159,7 +257,7 @@ def download_saves_for_app(session, appid):
     else:
         raw_game_name = f"app_{appid}"
 
-    game_name_snake = snake_case(raw_game_name)
+    game_name_snake = get_game_folder_name(raw_game_name, appid)
     print(f"[DEBUG] Using folder name '{game_name_snake}' for AppID {appid}")
 
     game_folder = os.path.join(STEAM_SAVES_ROOT, game_name_snake)
@@ -182,6 +280,8 @@ def download_saves_for_app(session, appid):
 
     os.makedirs(game_folder, exist_ok=True)
     downloaded_files_count = 0
+    failed_files_count = 0
+    used_names: set[str] = set()
 
     for row in rows:
         cells = row.find_all("td", recursive=False)
@@ -197,24 +297,33 @@ def download_saves_for_app(session, appid):
         if not str(file_url).startswith("http"):
             continue
 
-        safe_file_name = re.sub(r'[\\/*?:"<>|]', "_", file_name)
+        safe_file_name = sanitize_file_name(file_name)
+        if not safe_file_name:
+            print(f"  -> Unusable file name {file_name!r} (AppID {appid})")
+            failed_files_count += 1
+            continue
+        safe_file_name = unique_file_name(safe_file_name, used_names)
 
         print(f"Downloading '{safe_file_name}' (AppID {appid})...")
-        file_response = session.get(file_url, stream=True)
-        if file_response.status_code == HTTP_OK:
-            file_path = os.path.join(game_folder, safe_file_name)
-            with open(file_path, "wb") as f:
-                for chunk in file_response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-                    f.write(chunk)
+        file_path = os.path.join(game_folder, safe_file_name)
+        if download_file(session, str(file_url), file_path):
             downloaded_files_count += 1
             print(f"  -> Saved at: {file_path}")
         else:
-            print(f"  -> Error {file_response.status_code} downloading {safe_file_name}")
+            failed_files_count += 1
 
-    if downloaded_files_count > 0:
+    if failed_files_count > 0:
+        # A partial folder would be skipped as "already downloaded" on the next run
+        print(
+            f"[ERROR] {failed_files_count} file(s) failed for AppID {appid}; "
+            "discarding the partial folder so the next run retries it."
+        )
+        shutil.rmtree(game_folder, ignore_errors=True)
+    elif downloaded_files_count > 0:
         print(f"Done: Downloaded {downloaded_files_count} file(s) to '{game_folder}'")
     else:
         print(f"No files found to download for AppID {appid}")
+        shutil.rmtree(game_folder, ignore_errors=True)
 
 
 def create_zip_archive(folder_path: str) -> str:
@@ -247,16 +356,7 @@ def main():
     try:
         print("Logging in to Steam via browser...")
         cookies = login_with_selenium()
-
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-            )
-        })
-        for name, value in cookies.items():
-            session.cookies.set(name, value)
+        session = build_session(cookies)
 
         appids = get_appids_from_remotestorage(session)
         if not appids:
@@ -267,7 +367,8 @@ def main():
             download_saves_for_app(session, appid)
 
         zip_path = create_zip_archive(STEAM_SAVES_ROOT)
-        if zip_path:
+        # Only delete the originals once a non-empty archive is confirmed on disk
+        if zip_path and os.path.isfile(zip_path) and os.path.getsize(zip_path) > 0:
             print(f"[DEBUG] Removing folder '{STEAM_SAVES_ROOT}'...")
             shutil.rmtree(STEAM_SAVES_ROOT)
             print("[DEBUG] Done! All files archived and original folder removed.")
