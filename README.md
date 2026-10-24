@@ -2,6 +2,10 @@
 
 Welcome to my "Python Random Tools" repository! This is a personal collection of diverse Python scripts that I've developed. The goal of this repository is to offer a range of handy tools for various tasks. These scripts are free to use and can be a great resource for anyone looking to solve practical problems with Python or just exploring different aspects of the language. Feel free to explore, use, and contribute to the development of these tools!
 
+## Setup
+
+Each tool is self-contained and uses its own `.venv` virtual environment inside its folder. Setup steps are in the Installation section of each tool's README.
+
 ## Tools
 
 - **[amazon_product_info](https://github.com/RiccardoCuccu/py-tools/blob/main/amazon_product_info/)** - Tool to extract prices, names, and images from Amazon product URLs using PA-API, HTML parsing, and browser automation.
