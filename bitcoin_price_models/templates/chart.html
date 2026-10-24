@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #ffffff; color: #1f2933;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #e6e9ee; }
+  #toolbar h1 { font-size: 15px; font-weight: 600; margin: 0 12px 0 0; }
+  #toolbar button { font: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid #cfd6df;
+    background: #ffffff; color: #1f2933; border-radius: 4px; cursor: pointer; }
+  #toolbar button:hover { background: #f3f5f8; }
+  #toolbar button.active { background: #2196f3; border-color: #2196f3; color: #ffffff; }
+  #chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
+  #chart { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+  #legend { position: absolute; top: 8px; left: 12px; z-index: 5; font-size: 12px; line-height: 1.5;
+    background: rgba(255, 255, 255, 0.88); padding: 6px 8px; border-radius: 4px; max-width: 320px;
+    user-select: none; }
+  #legend .date { font-weight: 600; margin-bottom: 2px; }
+  #legend .row { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  #legend .row.off { opacity: 0.4; text-decoration: line-through; }
+  #legend .row.static { cursor: default; }
+  #legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+  #legend .val { margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; }
+  #footer { padding: 4px 12px; font-size: 11px; color: #6b7785; border-top: 1px solid #e6e9ee; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <h1 id="chart-title"></h1>
+    <button type="button" data-mode="golden">Golden Ratio</button>
+    <button type="button" data-mode="powerlaw">Power Law + Rainbow</button>
+  </div>
+  <div id="chart-wrap">
+    <div id="chart"></div>
+    <div id="legend"></div>
+  </div>
+  <div id="footer"></div>
+</div>
+<script>${lib_js}</script>
+<script>window.CHART_PAYLOAD = ${payload_json};</script>
+<script>${app_js}</script>
+</body>
+</html>
