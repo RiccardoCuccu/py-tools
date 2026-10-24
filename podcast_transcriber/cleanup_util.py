@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-cleanup_util.py - Remove Python __pycache__ directory after a run.
+cleanup_util.py - Remove the tool's Python __pycache__ directory after a run.
 """
 
 import os
 import shutil
+import sys
 
-CACHE_DIR = "__pycache__"
+# Anchored to this file so the cleanup never touches the caller's working directory
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__pycache__")
 
 
 def cleanup():
-    """Delete the Python __pycache__ directory if it exists."""
+    """Delete the tool's __pycache__ directory if it exists."""
     try:
-        if os.path.exists(CACHE_DIR):
+        if os.path.isdir(CACHE_DIR):
             shutil.rmtree(CACHE_DIR)
-    except Exception as e:
-        print(f"Error deleting cache directory: {e}")
+    except OSError as e:
+        print(f"Error deleting cache directory: {e}", file=sys.stderr)

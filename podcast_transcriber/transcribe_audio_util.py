@@ -10,34 +10,42 @@ import wave
 from vosk import Model, KaldiRecognizer
 
 AUDIO_FRAME_SIZE = 4000
+REQUIRED_CHANNELS = 1
+REQUIRED_SAMPLE_WIDTH_BYTES = 2
+TRANSCRIPT_SUFFIX = ".txt"
 
 
 def transcribe_audio(audio_file, model_path, audio_dir, transcript_dir):
-    """Transcribe audio_file to text using a Vosk model and save a .txt transcript."""
-    audio_file_path = os.path.join(audio_dir, audio_file)
+    """Transcribe audio_file to text using a Vosk model and save a .txt transcript.
 
-    model = Model(model_path)
+    The audio must be mono 16-bit PCM WAV (what download_audio produces). Raises
+    ValueError otherwise, since Vosk would silently return garbage.
+    """
+    audio_file_path = os.path.join(audio_dir, os.path.basename(audio_file))
 
-    wf = wave.open(audio_file_path, "rb")
+    with wave.open(audio_file_path, "rb") as wf:
+        if wf.getnchannels() != REQUIRED_CHANNELS or wf.getsampwidth() != REQUIRED_SAMPLE_WIDTH_BYTES:
+            raise ValueError(f"{audio_file} must be a mono 16-bit PCM WAV file")
 
-    rec = KaldiRecognizer(model, wf.getframerate())
+        model = Model(model_path)
+        rec = KaldiRecognizer(model, wf.getframerate())
 
-    transcript = ""
-    while True:
-        data = wf.readframes(AUDIO_FRAME_SIZE)
-        if len(data) == 0:
-            break
-        if rec.AcceptWaveform(data):
-            result = json.loads(rec.Result())
-            transcript += result['text'] + "\n"
+        segments = []
+        while True:
+            data = wf.readframes(AUDIO_FRAME_SIZE)
+            if len(data) == 0:
+                break
+            if rec.AcceptWaveform(data):
+                segments.append(json.loads(rec.Result()).get("text", ""))
 
-    result = json.loads(rec.FinalResult())
-    transcript += result['text']
+        segments.append(json.loads(rec.FinalResult()).get("text", ""))
 
-    if not os.path.exists(transcript_dir):
-        os.makedirs(transcript_dir)
+    # Drop empty segments produced by silence
+    transcript = "\n".join(s for s in segments if s)
 
-    txt_file_name = os.path.splitext(os.path.basename(audio_file))[0] + ".txt"
+    os.makedirs(transcript_dir, exist_ok=True)
+
+    txt_file_name = os.path.splitext(os.path.basename(audio_file))[0] + TRANSCRIPT_SUFFIX
     txt_file_path = os.path.join(transcript_dir, txt_file_name)
     with open(txt_file_path, "w", encoding="utf-8") as f:
         f.write(transcript)
