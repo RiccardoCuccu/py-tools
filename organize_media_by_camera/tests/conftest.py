@@ -1,4 +1,4 @@
-"""Pytest configuration: make the tool module importable and guard the source tree."""
+"""Pytest configuration: make the tool module importable; guard the source tree and network."""
 
 import os
 import sys
@@ -6,13 +6,19 @@ from pathlib import Path
 
 import pytest
 
-TOOL_DIR = Path(__file__).resolve().parent
+TOOL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOL_DIR))
 
 # Interpreter and pytest housekeeping that legitimately writes inside the tree
 _ALLOWED_PARTS = ("__pycache__", ".pytest_cache")
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 _WRITE_MODE_CHARS = "wax+"
+_NETWORK_EVENTS = (
+    "socket.connect",
+    "socket.getaddrinfo",
+    "socket.gethostbyname",
+    "socket.gethostbyaddr",
+)
 _guard_active = False
 
 
@@ -29,9 +35,11 @@ def _inside_tool_dir(path: object) -> bool:
 
 
 def _audit(event: str, args: tuple[object, ...]) -> None:
-    """Fail loudly on any write, rename, delete or mkdir inside the tool dir."""
+    """Fail loudly on any network use and on any write, rename, delete or mkdir inside the tool dir."""
     if not _guard_active or not args:
         return
+    if event in _NETWORK_EVENTS:
+        raise AssertionError(f"Test attempted network access: {event} {args[1:]!r}")
     if event == "open":
         flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
         mode = args[1] if len(args) > 1 and isinstance(args[1], str) else "r"
@@ -52,7 +60,7 @@ sys.addaudithook(_audit)
 
 @pytest.fixture(autouse=True)
 def _forbid_source_tree_writes():
-    """Fail any test that writes outside pytest temp locations into the tool dir."""
+    """Fail any test that uses the network or writes into the tool dir."""
     global _guard_active
     _guard_active = True
     try:

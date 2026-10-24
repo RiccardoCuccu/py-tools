@@ -71,6 +71,20 @@ SUPPORTED_EXTENSIONS: frozenset[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 FALLBACK_FOLDER = "Unknown_Device"
 
+# Folder names are built from untrusted metadata; cap their length so a bloated
+# EXIF string cannot exceed filesystem name limits
+MAX_FOLDER_NAME_LENGTH = 80
+
+# Names Windows refuses to create as files or folders (with or without extension)
+WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+)
+
+DELETE_CONTROL_CHAR = 127
+FIRST_PRINTABLE_CHAR = 32
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)-8s %(message)s",
@@ -132,10 +146,17 @@ def _model_from_image(image_path: Path) -> str:
     if not exif_data:
         return FALLBACK_FOLDER
 
-    make: str = (exif_data.get(_MAKE_TAG) or "").strip()
-    model: str = (exif_data.get(_MODEL_TAG) or "").strip()
+    make = _as_text(exif_data.get(_MAKE_TAG))
+    model = _as_text(exif_data.get(_MODEL_TAG))
 
     return _build_label(make, model)
+
+
+def _as_text(value: object) -> str:
+    """Coerce an EXIF value to a stripped string (bytes decoded leniently, others empty)."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _model_from_video(video_path: Path) -> str:
@@ -161,7 +182,7 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
     Return a flat dict of {atom_name: (data_offset, data_size)} for atoms
     found between *offset* and *end* in the open file handle *fh*.
 
-    Handles 64-bit extended atom sizes (size == 1 → read uint64 from next
+    Handles 64-bit extended atom sizes (size == 1 -> read uint64 from next
     8 bytes) used by large mdat atoms in MP4 files from Samsung etc.
     """
     import struct
@@ -185,6 +206,11 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
             header_len = 8
         if size < header_len:
             break
+        # A corrupt or truncated file can claim more bytes than it holds; clamp
+        # so later reads never request more than what is actually left
+        size = min(size, end - pos)
+        if size < header_len:
+            break
         atoms[name_str] = (pos + header_len, size - header_len)
         pos += size
     return atoms
@@ -193,7 +219,7 @@ def _read_atoms(fh: "BinaryIO", offset: int, end: int) -> dict:  # type: ignore[
 def _resolve_keys_atom(fh: "BinaryIO", keys_atom: tuple[int, int]) -> dict[int, str]:  # type: ignore[name-defined]
     """
     Parse a QuickTime 'keys' metadata atom and return a mapping
-    from numeric ilst index → full key name (e.g. {2: 'com.apple.quicktime.make'}).
+    from numeric ilst index -> full key name (e.g. {2: 'com.apple.quicktime.make'}).
 
     The keys atom layout:
         4 B  version/flags
@@ -244,9 +270,9 @@ def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # t
     Walk the moov atom tree looking for '©mod' (model) and '©mak' (make) values.
 
     Tries multiple metadata layouts:
-      - moov → udta → ©mod / ©mak (direct)
-      - moov → udta → meta → keys + ilst → ©mod / ©mak
-      - moov → meta → keys + ilst → ©mod / ©mak  (iPhone MOV layout)
+      - moov -> udta -> ©mod / ©mak (direct)
+      - moov -> udta -> meta -> keys + ilst -> ©mod / ©mak
+      - moov -> meta -> keys + ilst -> ©mod / ©mak  (iPhone MOV layout)
     """
     make = ""
     model = ""
@@ -304,7 +330,7 @@ def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # t
                 else:
                     make = value
 
-        # meta → keys + ilst under udta (meta has 4-byte version/flags prefix)
+        # meta -> keys + ilst under udta (meta has 4-byte version/flags prefix)
         meta = udta_atoms.get("meta")
         if meta and (not make or not model):
             meta_start = meta[0] + 4   # skip version/flags
@@ -315,7 +341,7 @@ def _find_camera_atoms(fh: "BinaryIO", top_atoms: dict) -> tuple[str, str]:  # t
                 keys_mapping = _resolve_keys_from_meta(meta_atoms)
                 _lookup_in_ilst(ilst, keys_mapping)
 
-    # --- Path 3: moov → meta directly (iPhone MOV layout) ---
+    # --- Path 3: moov -> meta directly (iPhone MOV layout) ---
     if not make and not model:
         meta = moov_atoms.get("meta")
         if meta:
@@ -446,14 +472,27 @@ def _build_label(make: str, model: str) -> str:
 
 
 def _sanitize_folder_name(name: str) -> str:
-    """Replace characters that are unsafe in folder names with underscores."""
+    """
+    Turn untrusted metadata text into a single safe folder name.
+
+    Replaces path-unsafe characters, strips edge dots (so the result can never
+    be '.' or '..' and escape the destination), caps the length and avoids
+    Windows reserved device names.
+    """
     # Strip null bytes and control characters that make path operations fail
-    result = "".join(ch for ch in name if ord(ch) >= 32)
+    result = "".join(
+        ch for ch in name if FIRST_PRINTABLE_CHAR <= ord(ch) != DELETE_CONTROL_CHAR
+    )
     unsafe = r'\/:*?"<>|'
     for ch in unsafe:
         result = result.replace(ch, "_")
-    result = result.strip("_").replace(" ", "_")
-    return result if result else FALLBACK_FOLDER
+    result = result.replace(" ", "_").strip("._")
+    result = result[:MAX_FOLDER_NAME_LENGTH].rstrip("._")
+    if not result:
+        return FALLBACK_FOLDER
+    if result.split(".")[0].upper() in WINDOWS_RESERVED_NAMES:
+        result = f"_{result}"
+    return result
 
 
 def collect_media(source: Path, recursive: bool) -> list[Path]:
@@ -509,7 +548,8 @@ def _clean_stem(stem: str) -> str | None:
     for pattern in (_PAREN_SUFFIX_PATTERN, _NUMERIC_SUFFIX_PATTERN):
         cleaned = pattern.sub("", stem)
         if cleaned != stem:
-            return cleaned
+            # A stem that is only a suffix (e.g. "(1)") must keep its name
+            return cleaned if cleaned.strip() else None
     return None
 
 
@@ -579,7 +619,14 @@ def execute_plan(
         target_dir = destination / folder_name
 
         if not dry_run:
-            target_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # One unusable folder name must not abort the other cameras
+                logger.error("Cannot create folder %s: %s", target_dir, exc)
+                files_skipped += len(files)
+                processed += len(files)
+                continue
 
         # Process clean filenames first so that suffixed variants (e.g.
         # IMG_6985(1).HEIC) can be detected as duplicates of already-moved
@@ -600,11 +647,11 @@ def execute_plan(
                     if new_suffix != src.suffix:
                         new_path = src.with_suffix(new_suffix)
                         if dry_run:
-                            logger.debug("[DRY-RUN] %s  →  %s (ext-case rename)", new_path.name, target_dir)
+                            logger.debug("[DRY-RUN] %s  ->  %s (ext-case rename)", new_path.name, target_dir)
                         else:
                             try:
                                 if _rename_if_safe(src, new_path):
-                                    logger.debug("%s  →  %s (ext-case rename)", src.name, new_path.name)
+                                    logger.debug("%s  ->  %s (ext-case rename)", src.name, new_path.name)
                             except Exception as exc:
                                 logger.error("Failed to rename %s: %s", src.name, exc)
                                 files_skipped += 1
@@ -644,7 +691,7 @@ def execute_plan(
                     if new_suffix != src.suffix:
                         display_name = src.stem + new_suffix
                 files_ok += 1
-                logger.debug("[DRY-RUN] %s  →  %s", display_name, target_dir)
+                logger.debug("[DRY-RUN] %s  ->  %s", display_name, target_dir)
             else:
                 try:
                     action(str(src), str(dest_file))
@@ -656,11 +703,11 @@ def execute_plan(
                                 dest_file = new_dest
                     if is_duplicate:
                         logger.debug(
-                            "%s  →  %s (duplicate)", dest_file.name, dest_file.parent
+                            "%s  ->  %s (duplicate)", dest_file.name, dest_file.parent
                         )
                         files_duplicated += 1
                     else:
-                        logger.debug("%s  →  %s", dest_file.name, target_dir)
+                        logger.debug("%s  ->  %s", dest_file.name, target_dir)
                     files_ok += 1
                 except Exception as exc:
                     logger.error("Failed to process %s: %s", src.name, exc)
@@ -710,15 +757,20 @@ def strip_duplicate_suffix(folder: Path, *, dry_run: bool) -> tuple[int, int]:
     for src, dst in candidates:
         if dst.exists():
             logger.warning(
-                "  Skipping '%s' → '%s': target already exists.", src.name, dst.name
+                "  Skipping '%s' -> '%s': target already exists.", src.name, dst.name
             )
             skipped += 1
         elif dry_run:
-            logger.info("  [DRY-RUN] Would rename '%s'  →  '%s'", src.name, dst.name)
+            logger.info("  [DRY-RUN] Would rename '%s'  ->  '%s'", src.name, dst.name)
             renamed += 1
         else:
-            src.rename(dst)
-            logger.debug("  Renamed '%s'  →  '%s'", src.name, dst.name)
+            try:
+                src.rename(dst)
+            except OSError as exc:
+                logger.error("  Failed to rename '%s': %s", src.name, exc)
+                skipped += 1
+                continue
+            logger.debug("  Renamed '%s'  ->  '%s'", src.name, dst.name)
             renamed += 1
 
     return renamed, skipped
@@ -732,7 +784,7 @@ def print_summary(
 ) -> None:
     """Print a human-readable summary of the organisation plan."""
     total_files = sum(len(v) for v in plan.values())
-    header = "═" * 60
+    header = "=" * 60
     mode_label = "DRY RUN - no filesystem changes" if dry_run else "LIVE RUN"
 
     print(f"\n{header}")
@@ -743,9 +795,9 @@ def print_summary(
     print(header)
 
     for folder_name, files in sorted(plan.items()):
-        print(f"\n  📁  {folder_name}  ({len(files)} files)")
+        print(f"\n  {folder_name}  ({len(files)} files)")
         for f in sorted(files):
-            print(f"       • {f.name}")
+            print(f"       - {f.name}")
 
     print(f"\n{header}\n")
 
@@ -818,7 +870,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Run the CLI; returns 0 on success, 1 on bad input, 2 if any file failed."""
     args = parse_args()
+
+    # Piped output on Windows uses the legacy code page; file names printed in
+    # the summary may not be encodable and must not crash the run
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)

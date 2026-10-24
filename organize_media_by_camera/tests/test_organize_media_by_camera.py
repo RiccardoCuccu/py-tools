@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import socket
 import struct
 import sys
 from pathlib import Path
@@ -1650,3 +1651,136 @@ def test_main_custom_destination_is_used(
     assert om.main() == 0
     assert (dest / "Unknown_Device" / "a.jpg").exists()
     assert not (source / "a.jpg").exists()
+
+
+# ============================================================
+# Hardening: untrusted metadata, corrupt atoms, rename failures
+# ============================================================
+
+
+@pytest.mark.parametrize("name", ["..", ".", "...", " .. ", "../..", "..\\.."])
+def test_sanitize_folder_name_never_yields_a_traversal_name(name: str) -> None:
+    """Dot-only and separator-laden names cannot escape the destination folder."""
+    result = _sanitize_folder_name(name)
+    assert result not in {".", ".."}
+    assert "/" not in result and "\\" not in result
+    assert not result.startswith(".") and not result.endswith(".")
+
+
+@pytest.mark.parametrize("name", ["CON", "nul", "Com1", "LPT9", "aux.txt"])
+def test_sanitize_folder_name_avoids_windows_reserved_names(name: str) -> None:
+    """Windows device names are prefixed so the folder can be created."""
+    assert _sanitize_folder_name(name) == f"_{name}"
+
+
+def test_sanitize_folder_name_caps_length_and_strips_edge_dots() -> None:
+    """Oversized names are truncated, and truncation never leaves a trailing dot."""
+    result = _sanitize_folder_name("A" * 79 + "." + "B" * 50)
+    assert len(result) <= om.MAX_FOLDER_NAME_LENGTH
+    assert not result.endswith(".")
+
+
+def test_sanitize_folder_name_keeps_inner_dots_and_strips_delete_char() -> None:
+    """Inner dots are legitimate model text; the DEL control character is removed."""
+    assert _sanitize_folder_name("Canon EOS 5D Mk.II\x7f") == "Canon_EOS_5D_Mk.II"
+
+
+def test_traversal_model_name_is_organised_inside_destination(tmp_path: Path) -> None:
+    """A crafted EXIF Model of '..' must not move the file outside the destination."""
+    source = tmp_path / "source"
+    source.mkdir()
+    photo = make_jpeg_with_exif(source / "evil.jpg", model="..")
+    plan = build_plan([photo], source)
+    execute_plan(plan, source, copy=False, dry_run=False)
+    assert not (tmp_path / "evil.jpg").exists()
+    moved = [p for p in source.rglob("evil.jpg")]
+    assert len(moved) == 1 and moved[0].parent.parent == source
+
+
+def test_model_from_image_tolerates_bytes_exif_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make/Model returned as bytes or non-text must not crash label building."""
+
+    class _FakeImage:
+        def __enter__(self) -> "_FakeImage":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def getexif(self) -> dict:
+            return {_EXIF_MAKE_TAG_ID: b"Canon", _EXIF_MODEL_TAG_ID: 12345}
+
+    monkeypatch.setattr(om.Image, "open", lambda path: _FakeImage())
+    assert _model_from_image(tmp_path / "x.jpg") == "Canon"
+
+
+@pytest.mark.parametrize("stem", ["(1)", " (2)", "_1", "  (3)"])
+def test_clean_stem_never_returns_an_empty_name(stem: str) -> None:
+    """A stem made only of a duplicate suffix has no clean name to fall back to."""
+    assert _clean_stem(stem) is None
+
+
+def test_strip_duplicate_suffix_keeps_files_named_only_by_suffix(tmp_path: Path) -> None:
+    """'(1).jpg' must not be renamed to the hidden, extension-only '.jpg'."""
+    _touch(tmp_path / "(1).jpg")
+    renamed, skipped = strip_duplicate_suffix(tmp_path, dry_run=False)
+    assert (renamed, skipped) == (0, 0)
+    assert (tmp_path / "(1).jpg").exists()
+
+
+def test_strip_duplicate_suffix_counts_failed_rename_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OS error on one rename is reported as skipped and does not stop the others."""
+    _touch(tmp_path / "a (1).jpg")
+    _touch(tmp_path / "b (1).jpg")
+    real_rename = Path.rename
+
+    def _flaky(self: Path, target: Path) -> Path:
+        if self.name == "a (1).jpg":
+            raise PermissionError("locked")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _flaky)
+    renamed, skipped = strip_duplicate_suffix(tmp_path, dry_run=False)
+    assert (renamed, skipped) == (1, 1)
+    assert (tmp_path / "a (1).jpg").exists()
+    assert (tmp_path / "b.jpg").exists()
+
+
+def test_execute_plan_unusable_folder_does_not_abort_other_folders(tmp_path: Path) -> None:
+    """If one camera folder cannot be created, only its files are skipped."""
+    blocked = _touch(tmp_path / "Blocked")  # a file already owns the folder name
+    ok_file = _touch(tmp_path / "ok.jpg")
+    bad_file = _touch(tmp_path / "bad.jpg")
+    plan = {"Blocked": [bad_file], "Fine": [ok_file]}
+    files_ok, files_skipped, _ = execute_plan(plan, tmp_path, copy=False, dry_run=False)
+    assert (files_ok, files_skipped) == (1, 1)
+    assert (tmp_path / "Fine" / "ok.jpg").exists()
+    assert bad_file.exists() and blocked.is_file()
+
+
+def test_read_atoms_clamps_oversized_atom_to_available_bytes() -> None:
+    """An atom claiming more bytes than the region holds is clamped, not trusted."""
+    import io
+
+    data = struct.pack(">I4s", 10_000_000, b"udta") + b"abcd"
+    atoms = _read_atoms(io.BytesIO(data), 0, len(data))
+    offset, size = atoms["udta"]
+    assert offset + size == len(data)
+
+
+def test_print_summary_output_is_ascii(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The summary avoids symbols that legacy Windows code pages cannot encode."""
+    om.print_summary({"Cam": [tmp_path / "a.jpg"]}, tmp_path, dry_run=True)
+    assert capsys.readouterr().out.isascii()
+
+
+def test_network_access_is_blocked_during_tests() -> None:
+    """The suite-wide guard fails loudly on any attempt to reach the network."""
+    with pytest.raises(AssertionError, match="network"):
+        socket.getaddrinfo("example.com", 80)
