@@ -26,6 +26,7 @@ Notes:
     - The OLDER file (by creation date) is always kept.
     - Deletion is permanent - files are NOT sent to the recycle bin.
     - Use --dry-run first to review what would be deleted.
+    - Symbolic links are ignored, so a link and its target are never paired.
 """
 
 from __future__ import annotations
@@ -47,6 +48,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Hashing and display constants
+HASH_CHUNK_SIZE = 65536
+BYTES_PER_UNIT = 1024
+SEPARATOR_WIDTH = 60
+
 
 def _progress(current: int, total: int) -> None:
     """Overwrite the current line with a simple file counter."""
@@ -58,17 +64,30 @@ def _progress(current: int, total: int) -> None:
 
 
 def collect_files(source: Path, recursive: bool) -> list[Path]:
-    """Return all files found in the source folder."""
+    """
+    Return all regular files found in the source folder, sorted by path.
+
+    Symbolic links are skipped: hashing a link hashes its target, so the link
+    and the target would be reported as duplicates and deleting the target
+    would leave a dangling link behind.
+    """
     sys.stderr.write("  Scanning files ...\n")
     sys.stderr.flush()
-    pattern = "**/*" if recursive else "*"
-    return [p for p in source.glob(pattern) if p.is_file()]
+    if recursive:
+        candidates = (
+            Path(root) / name
+            for root, _dirs, names in os.walk(source, followlinks=False)
+            for name in names
+        )
+    else:
+        candidates = source.iterdir()
+    return sorted(p for p in candidates if p.is_file() and not p.is_symlink())
 
 
-def _sha256(path: Path, chunk_size: int = 65536) -> str:
+def _sha256(path: Path, chunk_size: int = HASH_CHUNK_SIZE) -> str:
     """Return the SHA-256 hex digest of a file, reading it in chunks."""
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
+    with path.open("rb") as fh:
         while chunk := fh.read(chunk_size):
             h.update(chunk)
     return h.hexdigest()
@@ -111,11 +130,12 @@ def _creation_time(path: Path) -> float:
 
 def _format_size(size_bytes: int) -> str:
     """Return a human-readable file size string."""
+    size = float(size_bytes)
     for unit in ("B", "KB", "MB", "GB"):
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes //= 1024
-    return f"{size_bytes:.1f} TB"
+        if size < BYTES_PER_UNIT:
+            return f"{size:.1f} {unit}"
+        size /= BYTES_PER_UNIT
+    return f"{size:.1f} TB"
 
 
 def _format_info(path: Path) -> str:
@@ -129,7 +149,11 @@ def _format_info(path: Path) -> str:
 def _ask(prompt: str) -> bool:
     """Prompt the user for y/n. Returns True for 'y'."""
     while True:
-        answer = input(prompt).strip().lower()
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            # No interactive input available: never delete by default
+            return False
         if answer in ("y", "yes"):
             return True
         if answer in ("n", "no", ""):
@@ -141,9 +165,10 @@ def resolve_duplicate_group(paths: list[Path]) -> tuple[Path, list[Path]]:
     """
     Given a group of identical files, return (keeper, duplicates_to_remove).
 
-    The keeper is the oldest file by creation date. All others are duplicates.
+    The keeper is the oldest file by creation date; ties are broken by path so
+    the choice is deterministic. All others are duplicates.
     """
-    sorted_paths = sorted(paths, key=_creation_time)
+    sorted_paths = sorted(paths, key=lambda p: (_creation_time(p), str(p)))
     keeper = sorted_paths[0]
     duplicates = sorted_paths[1:]
     return keeper, duplicates
@@ -166,16 +191,28 @@ def process_duplicates(
     total_groups = len(hash_map)
 
     for group_idx, (digest, paths) in enumerate(hash_map.items(), start=1):
-        keeper, duplicates = resolve_duplicate_group(paths)
+        try:
+            keeper, duplicates = resolve_duplicate_group(paths)
+            keeper_info = _format_info(keeper)
+        except OSError as exc:
+            # A file vanished after hashing: leave the whole group untouched
+            logger.error("Skipping group %s: %s", digest[:16], exc)
+            skipped += len(paths) - 1
+            continue
 
-        print(f"\n{'─' * 60}")
+        print(f"\n{'-' * SEPARATOR_WIDTH}")
         print(f"  Duplicate group {group_idx}/{total_groups}  (SHA-256: {digest[:16]}...)")
-        print(f"\n  KEEP (oldest):")
-        print(_format_info(keeper))
+        print("\n  KEEP (oldest):")
+        print(keeper_info)
 
         for dup in duplicates:
-            print(f"\n  DUPLICATE:")
-            print(_format_info(dup))
+            print("\n  DUPLICATE:")
+            try:
+                print(_format_info(dup))
+            except OSError as exc:
+                logger.error("Could not inspect %s: %s", dup, exc)
+                skipped += 1
+                continue
 
             if dry_run:
                 print("  [DRY-RUN] Would delete the duplicate above.")
@@ -188,6 +225,11 @@ def process_duplicates(
                 confirmed = _ask("\n  Delete this duplicate? [y/N] ")
 
             if confirmed:
+                # Never delete a copy unless the kept file is still on disk
+                if not keeper.is_file():
+                    logger.error("Keeper missing, not deleting %s", dup)
+                    skipped += 1
+                    continue
                 try:
                     dup.unlink()
                     logger.info("Deleted: %s", dup)
@@ -205,7 +247,7 @@ def process_duplicates(
 def print_summary(hash_map: dict[str, list[Path]], total_files: int) -> None:
     """Print a summary of what was found before processing."""
     duplicate_files = sum(len(v) - 1 for v in hash_map.values())
-    header = "=" * 60
+    header = "=" * SEPARATOR_WIDTH
 
     print(f"\n{header}")
     print(f"  Files scanned    : {total_files}")
@@ -214,8 +256,8 @@ def print_summary(hash_map: dict[str, list[Path]], total_files: int) -> None:
     print(f"{header}\n")
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse and return command-line arguments."""
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse and return command-line arguments (from argv, or sys.argv if None)."""
     parser = argparse.ArgumentParser(
         description="Find and remove duplicate files inside a folder.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -250,12 +292,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose output.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point: parse arguments, find duplicates, and process them."""
-    args = parse_args()
+    args = parse_args(argv)
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -298,7 +340,7 @@ def main() -> int:
         hash_map, dry_run=False, auto_yes=args.yes
     )
 
-    print(f"\n{'=' * 60}")
+    print(f"\n{'=' * SEPARATOR_WIDTH}")
     logger.info("Done: %d deleted, %d skipped.", deleted, skipped)
 
     return 0
