@@ -11,55 +11,115 @@
 - Optionally compares against local reference files in `local_references` folder with `--use-local` flag
 - Uses API-first approach for academic sources (arXiv, DOI, Semantic Scholar) with intelligent fallbacks
 - Attempts multiple download methods with retries and increasing timeouts for each source
+- Downloads only from public http(s) hosts (redirects are re-checked, localhost and private networks are blocked) and caps each download at 5 MB of HTML or 30 MB of PDF within 60 seconds
 - Calculates similarity scores using TF-IDF and cosine similarity (includes sources ≥ 1%)
 - Creates detailed report with similarity scores, matching segments, and failed download links
 
-## Usage
+## Installation
+
+Open PowerShell in the tool folder, create a virtual environment and install the dependencies:
+
 ```
-# Basic usage - Check entire document
-python main.py document.docx
-python main.py document.pdf
-python main.py document.txt
+python -m venv .venv; .venv\Scripts\Activate.ps1; pip install -r requirements.txt
+```
 
-# Check specific pages from a position (works with all formats)
-python main.py document.docx --pages 3 --position middle
-python main.py document.pdf --pages 5 --position start
-python main.py document.txt --pages 5 --position end
+See [SETUP.md](SETUP.md) for detailed setup instructions, including SerpApi configuration (recommended for reliable results) and the contact email used by `--use-apis`.
 
-# Use academic APIs for better coverage
-python main.py document.docx --pages 3 --use-apis
+## Usage
 
-# Compare with local reference files
-python main.py document.docx --use-local
+All commands run from PowerShell inside the tool's virtual environment.
 
-# Combine local references with online search and APIs
-python main.py document.docx --pages 3 --use-local --use-apis
+Basic usage, check the entire document:
 
-# Use only cached sources (no new downloads)
-python main.py document.docx --cache-only
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx
+```
 
-# Extract ALL relevant phrases (WARNING: very slow)
-python main.py document.docx --num-phrases 0
+```
+.venv\Scripts\Activate.ps1; python main.py document.pdf
+```
 
-# Extract specific number of phrases
-python main.py document.docx --num-phrases 15
+```
+.venv\Scripts\Activate.ps1; python main.py document.txt
+```
 
-# Use specific search engine
-python main.py document.docx --search-engine serpapi
-python main.py document.docx --search-engine duckduckgo
+Check specific pages from a position (works with all formats):
 
-# Limit the number of sources to check
-python main.py document.docx --max-sources 10
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --pages 3 --position middle
+```
 
-# Typical thorough check - 3 middle pages, 10 sources, web + academic APIs
-python main.py document.docx --pages 3 --position middle --max-sources 10 --use-apis
+```
+.venv\Scripts\Activate.ps1; python main.py document.pdf --pages 5 --position start
+```
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.txt --pages 5 --position end
+```
+
+Use academic APIs for better coverage:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --pages 3 --use-apis
+```
+
+Compare with local reference files:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --use-local
+```
+
+Combine local references with online search and APIs:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --pages 3 --use-local --use-apis
+```
+
+Use only cached sources (no new downloads):
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --cache-only
+```
+
+Extract ALL relevant phrases (WARNING: very slow):
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --num-phrases 0
+```
+
+Extract a specific number of phrases:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --num-phrases 15
+```
+
+Use a specific search engine:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --search-engine serpapi
+```
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --search-engine duckduckgo
+```
+
+Limit the number of sources to check:
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --max-sources 10
+```
+
+Typical thorough check (3 middle pages, 10 sources, web and academic APIs):
+
+```
+.venv\Scripts\Activate.ps1; python main.py document.docx --pages 3 --position middle --max-sources 10 --use-apis
 ```
 
 ### Options
 
-- `--pages N` - Extract N pages instead of entire document (works for all formats: .docx, .pdf, .txt)
+- `--pages N` - Extract N pages instead of entire document (works for all formats: .docx, .pdf, .txt); must be 1 or more
 - `--position` - Extract from `start`, `middle`, or `end` (default: middle)
-- `--max-sources N` - Maximum sources to check (default: 5)
+- `--max-sources N` - Maximum sources to check, 1 or more (default: 5); the earliest-found sources are kept
 - `--num-phrases N` - Number of key phrases to extract:
   - Not specified: auto-scale (1 per page, min 5, max 20)
   - `N > 0`: extract exactly N phrases
@@ -74,12 +134,10 @@ python main.py document.docx --pages 3 --position middle --max-sources 10 --use-
 
 The script will automatically search online, download sources, analyze similarities, and generate a report saved as `<filename>_plagiarism_report.txt` in the script directory.
 
-## Installation
+## Tests
 
-To use `plagiarism_checker.py`, you'll need to install the following Python libraries:
+The `tests/` folder contains the unit tests. They run offline and never modify real files. Run them from PowerShell inside the tool's virtual environment:
 
 ```
-pip install python-docx PyMuPDF requests beautifulsoup4 scikit-learn nltk
+.venv\Scripts\Activate.ps1; pip install -r requirements-dev.txt; pytest tests -v
 ```
-
-See [SETUP.md](SETUP.md) for detailed setup instructions, including SerpApi configuration (recommended for reliable results) and the contact email used by `--use-apis`.

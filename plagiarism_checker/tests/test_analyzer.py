@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Callable, List
 
+import pytest
+
 import analyzer
 from analyzer import SimilarityAnalyzer
 
@@ -290,3 +292,17 @@ def test_generate_report_always_includes_limitations(tmp_path: Path) -> None:
     text = (tmp_path / "limits_plagiarism_report.txt").read_text(encoding="utf-8")
     assert "LIMITATIONS" in text
     assert "Does NOT detect paraphrasing" in text
+
+
+def test_find_matching_segments_processes_every_block_of_document_sentences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blocked similarity computation still reports matches from every block, in order."""
+    monkeypatch.setattr(analyzer, "SENTENCE_BLOCK_SIZE", 2)
+    inst = make_analyzer(tmp_path)
+    shared = [_sentence(10, tag) for tag in ("alpha", "bravo", "charlie", "delta", "echo")]
+    doc_text = " ".join(shared)
+    source_text = " ".join(reversed(shared))
+    matches = inst._find_matching_segments(doc_text, source_text, threshold=0.9)
+    assert [m["doc_text"] for m in matches] == shared
+    assert all(m["doc_text"] == m["source_text"] for m in matches)

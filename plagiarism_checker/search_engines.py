@@ -11,7 +11,7 @@ import time
 import re
 import getpass
 from pathlib import Path
-from urllib.parse import quote_plus, quote
+from urllib.parse import parse_qs, quote_plus, quote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -265,7 +265,9 @@ class SearchEngineManager:
             
             print(f"[3/5] Searching online for similar content using {engine_name}...")
 
-        all_urls = set()
+        # Insertion-ordered so max_sources keeps the earliest (best-ranked) hits
+        # instead of an arbitrary subset of a hash-ordered set
+        all_urls = {}
         api_count = 0
         web_count = 0
         failed_searches = 0
@@ -278,11 +280,11 @@ class SearchEngineManager:
             api_urls = []
             if self.use_apis:
                 api_urls = self._search_academic_apis(phrase)
-                all_urls.update(api_urls)
+                all_urls.update(dict.fromkeys(api_urls))
                 api_count += len(api_urls)
 
             web_urls = self._search_online(phrase, attempt=i)
-            all_urls.update(web_urls)
+            all_urls.update(dict.fromkeys(web_urls))
             web_count += len(web_urls)
             total_searches += 1
             
@@ -358,7 +360,7 @@ class SearchEngineManager:
                 except Exception:
                     pass
         
-        return list(set(all_urls))
+        return list(dict.fromkeys(all_urls))
 
     def _search_crossref(self, query):
         """Search CrossRef API for academic papers"""
@@ -451,11 +453,31 @@ class SearchEngineManager:
                 print(f"    Warning: SerpApi returned HTTP {response.status_code}")
                 return []
         except requests.exceptions.RequestException as e:
-            print(f"    Warning: SerpApi request failed: {str(e)[:50]}")
+            # Exception text can embed the request URL, which carries the API key
+            print(f"    Warning: SerpApi request failed: {type(e).__name__}")
             return []
         except (ValueError, KeyError) as e:
             print(f"    Warning: Failed to parse SerpApi response: {str(e)[:50]}")
             return []
+
+    @staticmethod
+    def _unwrap_duckduckgo_link(href):
+        """Return the real target of a DuckDuckGo result link, or None if unusable.
+
+        The HTML endpoint wraps results as `//duckduckgo.com/l/?uddg=<encoded URL>`;
+        direct http(s) links are returned unchanged.
+        """
+        if href.startswith('//'):
+            href = 'https:' + href
+        parsed = urlparse(href)
+        if parsed.scheme not in ('http', 'https'):
+            return None
+        if parsed.hostname and parsed.hostname.endswith('duckduckgo.com') and parsed.path.startswith('/l/'):
+            targets = parse_qs(parsed.query).get('uddg')
+            if not targets or not targets[0].startswith(('http://', 'https://')):
+                return None
+            return targets[0]
+        return href
 
     def _search_duckduckgo(self, query, attempt=0):
         """Search using DuckDuckGo HTML scraping"""
@@ -484,9 +506,10 @@ class SearchEngineManager:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
                     for result in soup.find_all('a', class_='result__a', limit=5):
-                        if (href := result.get('href')) and isinstance(href, str) and href.startswith('http'):
-                            if self._should_include_url(href):
-                                results.append(href)
+                        href = result.get('href')
+                        target = self._unwrap_duckduckgo_link(href) if isinstance(href, str) else None
+                        if target and self._should_include_url(target):
+                            results.append(target)
                     
                     if results:
                         return results

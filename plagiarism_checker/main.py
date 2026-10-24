@@ -207,8 +207,31 @@ def validate_file(file_path):
         print(f"Warning: File is very large ({file_path.stat().st_size / 1024 / 1024:.1f}MB)")
         confirm_continue("Processing may take a long time. Continue?")
 
+def positive_int(value):
+    """argparse type: an integer >= 1."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
+    return number
+
+
+def non_negative_int(value):
+    """argparse type: an integer >= 0."""
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must be zero or greater, got {value}")
+    return number
+
+
 def main():
     """Parse arguments and run the plagiarism check workflow."""
+    # Piped output on Windows uses the legacy code page, which cannot encode
+    # the status symbols printed below and would crash mid-run
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
     parser = argparse.ArgumentParser(
         description='Check documents for plagiarism by searching online sources',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -224,13 +247,13 @@ Examples:
     )
 
     parser.add_argument('file', nargs='?', default=None, help='Path to the document (.docx, .pdf or .txt)')
-    parser.add_argument('--pages', type=int, default=None,
+    parser.add_argument('--pages', type=positive_int, default=None,
                         help='Number of pages to extract (default: all)')
     parser.add_argument('--position', choices=['start', 'middle', 'end'], default='middle',
                         help='Position to extract pages from (default: middle)')
-    parser.add_argument('--max-sources', type=int, default=5,
+    parser.add_argument('--max-sources', type=positive_int, default=5,
                         help='Maximum number of sources to check (default: 5)')
-    parser.add_argument('--num-phrases', type=int, default=None,
+    parser.add_argument('--num-phrases', type=non_negative_int, default=None,
                         help='Number of key phrases to extract (default: auto-scale, 1 per page, use 0 for ALL phrases)')
     parser.add_argument('--use-apis', action='store_true',
                         help='Search academic APIs (CrossRef, arXiv, Semantic Scholar) in addition to web search')

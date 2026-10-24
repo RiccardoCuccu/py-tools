@@ -19,6 +19,11 @@ except ImportError as e:
     sys.exit(1)
 
 
+# Document sentences compared per block; bounds the dense similarity matrix to
+# SENTENCE_BLOCK_SIZE x (source sentences) instead of the full cross product
+SENTENCE_BLOCK_SIZE = 500
+
+
 class SimilarityAnalyzer:
     """Calculates TF-IDF cosine similarity between documents and generates reports."""
 
@@ -95,19 +100,19 @@ class SimilarityAnalyzer:
             doc_matrix = tfidf_matrix[:len(doc_sentences)]  # type: ignore[index]
             source_matrix = tfidf_matrix[len(doc_sentences):]  # type: ignore[index]
             
-            # Compute similarity matrix for all pairs at once
-            similarity_matrix = cosine_similarity(doc_matrix, source_matrix)  # type: ignore[arg-type]
-            
             matches = []
-            for i, doc_sent in enumerate(doc_sentences):
-                max_idx = int(similarity_matrix[i].argmax())
-                max_sim = float(similarity_matrix[i, max_idx])
-                if max_sim >= threshold:
-                    matches.append({
-                        'doc_text': doc_sent,
-                        'source_text': source_sentences[max_idx],
-                        'similarity': max_sim
-                    })
+            for block_start in range(0, len(doc_sentences), SENTENCE_BLOCK_SIZE):
+                block = doc_matrix[block_start:block_start + SENTENCE_BLOCK_SIZE]  # type: ignore[index]
+                similarity_matrix = cosine_similarity(block, source_matrix)  # type: ignore[arg-type]
+                for offset in range(similarity_matrix.shape[0]):
+                    max_idx = int(similarity_matrix[offset].argmax())
+                    max_sim = float(similarity_matrix[offset, max_idx])
+                    if max_sim >= threshold:
+                        matches.append({
+                            'doc_text': doc_sentences[block_start + offset],
+                            'source_text': source_sentences[max_idx],
+                            'similarity': max_sim
+                        })
             
             return matches
         except (ValueError, RuntimeError) as e:

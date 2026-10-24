@@ -874,3 +874,47 @@ def test_search_duckduckgo_exhausts_retries_returns_empty(
     monkeypatch.setattr(mgr.session, "get", _boom)
     urls = mgr._search_duckduckgo("query")
     assert urls == []
+
+
+def test_search_duckduckgo_unwraps_redirect_links(
+    manager: Callable[..., SearchEngineManager], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Result links wrapped as duckduckgo.com/l/?uddg=... are resolved to the real target."""
+    html = (
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fp%3Fa%3D1&rut=x">1</a>'
+        '<a class="result__a" href="//duckduckgo.com/l/?rut=missing">2</a>'
+        '<a class="result__a" href="javascript:alert(1)">3</a>'
+    )
+    mgr = manager()
+    monkeypatch.setattr(mgr.session, "get", lambda *a, **k: FakeResponse(200, text=html))
+    assert mgr._search_duckduckgo("query") == ["https://example.com/p?a=1"]
+
+
+def test_search_all_phrases_keeps_earliest_urls_in_order(
+    manager: Callable[..., SearchEngineManager], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """max_sources keeps the first-found URLs in discovery order, not an arbitrary subset."""
+    mgr = manager(search_engine="duckduckgo")
+    monkeypatch.setattr(search_engines.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mgr, "_search_online", lambda q, attempt=0: [f"http://{q}/{n}" for n in range(3)]
+    )
+    urls = mgr._search_all_phrases(["a", "b"], max_sources=4)
+    assert urls == ["http://a/0", "http://a/1", "http://a/2", "http://b/0"]
+
+
+def test_search_serpapi_failure_message_never_echoes_exception_text(
+    manager: Callable[..., SearchEngineManager],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A request error is reported by type only: its text may embed the URL with the API key."""
+    mgr = manager()
+    mgr.serpapi_key = "SECRET_KEY_123"
+
+    def _boom(*a: object, **k: object) -> None:
+        raise requests.exceptions.ConnectionError("failed for /search?api_key=SECRET_KEY_123")
+
+    monkeypatch.setattr(search_engines.requests, "get", _boom)
+    assert mgr._search_serpapi("query") == []
+    assert "SECRET_KEY_123" not in capsys.readouterr().out

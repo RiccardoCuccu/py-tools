@@ -358,3 +358,18 @@ def test_main_reset_serpapi_key_exits_zero_without_file(
 
     assert excinfo.value.code == 0
     assert "removed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "flag, value", [("--pages", "0"), ("--max-sources", "0"), ("--num-phrases", "-1")]
+)
+def test_main_rejects_non_positive_numeric_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flag: str, value: str
+) -> None:
+    """Zero or negative counts are rejected by argparse (exit code 2) before any work starts."""
+    path = tmp_path / "doc.txt"
+    path.write_text("some document text")
+    monkeypatch.setattr("sys.argv", ["main.py", str(path), flag, value])
+    with pytest.raises(SystemExit) as excinfo:
+        main.main()
+    assert excinfo.value.code == 2

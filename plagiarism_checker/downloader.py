@@ -10,10 +10,12 @@ Includes API-based fallbacks for academic sources.
 import sys
 import time
 import hashlib
+import ipaddress
 import re
 import gzip
+import socket
 from pathlib import Path
-from urllib.parse import urlparse, quote
+from urllib.parse import urljoin, urlparse, quote
 
 try:
     import requests
@@ -26,15 +28,38 @@ except ImportError as e:
 
 from config import get_contact_email
 
+# Download safety limits
+MAX_HTML_BYTES = 5 * 1024 * 1024
+MAX_PDF_BYTES = 30 * 1024 * 1024
+MAX_REDIRECTS = 5
+# Whole-download deadline; requests' timeout only bounds each socket read, so a
+# server that drips bytes could otherwise stall the run forever
+MAX_FETCH_SECONDS = 60
+FETCH_CHUNK_BYTES = 64 * 1024
+ALLOWED_URL_SCHEMES = ("http", "https")
+REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
+HTTP_OK = 200
+PDF_CONTENT_TYPE = "application/pdf"
+
+
+class UnsafeURLError(requests.exceptions.RequestException):
+    """Raised when a URL targets a non-public address or an unsupported scheme."""
+
 
 class ContentDownloader:
     """Downloads and caches web content with multi-method retry and compressed storage."""
 
-    def __init__(self, doc_path, cache_only=False):
-        """Initialize content downloader with cache directory"""
+    def __init__(self, doc_path, cache_only=False, cache_dir=None):
+        """Initialize content downloader with cache directory.
+
+        Args:
+            doc_path: Path of the document being checked.
+            cache_only: When True, never download, only read the cache.
+            cache_dir: Cache location; defaults to `.plagiarism_cache` next to this module.
+        """
         self.doc_path = Path(doc_path)
         script_dir = Path(__file__).resolve().parent
-        self.cache_dir = script_dir / ".plagiarism_cache"
+        self.cache_dir = Path(cache_dir) if cache_dir else script_dir / ".plagiarism_cache"
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_only = cache_only
         self.cache_index_file = self.cache_dir / "_index.tsv"
@@ -182,6 +207,8 @@ class ContentDownloader:
                 if text and len(text) > 0:
                     self._write_cache(url_hash, text, url)
                     return text, None
+            except UnsafeURLError as e:
+                return None, f"Blocked unsafe URL: {e}"
             except requests.exceptions.Timeout:
                 last_error = f"Timeout after {timeout}s"
             except requests.exceptions.ConnectionError:
@@ -273,7 +300,7 @@ class ContentDownloader:
         """Fetch content via Unpaywall API for DOI links"""
         try:
             # Extract DOI from URL
-            doi_match = re.search(r'10\.\d{4,}/[^\s]+', url)
+            doi_match = re.search(r'10\.\d{4,}/[^\s?#]+', url)
             if not doi_match:
                 return None
             
@@ -281,7 +308,8 @@ class ContentDownloader:
             
             # Try Unpaywall API to find open access version
             email_encoded = quote(get_contact_email(), safe='')
-            unpaywall_url = f"https://api.unpaywall.org/v2/{doi}?email={email_encoded}"
+            # Quote the DOI so it cannot inject extra path segments or query parameters
+            unpaywall_url = f"https://api.unpaywall.org/v2/{quote(doi, safe='/')}?email={email_encoded}"
             response = requests.get(unpaywall_url, timeout=15)
             
             if response.status_code == 200:
@@ -358,32 +386,35 @@ class ContentDownloader:
         return None
 
     def _download_pdf_as_text(self, url):
-        """Download and extract text from PDF URL"""
+        """Download and extract text from PDF URL (size-capped, public hosts only)"""
         try:
-            response = requests.get(url, timeout=20, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
-            
-            if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
+            status, body, truncated, content_type = self._fetch(
+                url,
+                {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+                20,
+                MAX_PDF_BYTES,
+            )
+            # A truncated PDF is unreadable, so an oversized one is rejected outright
+            if status == HTTP_OK and PDF_CONTENT_TYPE in content_type and not truncated:
                 # Try to extract text using PyMuPDF if available
                 try:
                     import fitz
                     import io
-                    
-                    pdf_stream = io.BytesIO(response.content)
+
+                    pdf_stream = io.BytesIO(body)
                     doc = fitz.open(stream=pdf_stream, filetype="pdf")  # type: ignore[attr-defined]
                     text = ""
                     for page in doc:
                         text += str(page.get_text())
                     doc.close()
-                    
+
                     if len(text) > 200:
                         return text
                 except ImportError:
                     pass
         except Exception:
             pass
-        
+
         return None
 
     def _read_cache(self, url_hash):
@@ -424,21 +455,104 @@ class ContentDownloader:
         if url:
             self._append_cache_index(url_hash, url)
 
+    @staticmethod
+    def _validate_public_url(url):
+        """Reject URLs that are not http(s) or that resolve to a non-public address.
+
+        Search results are untrusted input; without this check a hostile result
+        could point the downloader at localhost, the LAN or a cloud metadata
+        endpoint. Raises UnsafeURLError on any non-global address.
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ALLOWED_URL_SCHEMES or not parsed.hostname:
+            raise UnsafeURLError(f"unsupported URL: {url}")
+
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            addr_infos = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+        except (ValueError, socket.gaierror) as e:
+            raise requests.exceptions.ConnectionError(f"cannot resolve {parsed.hostname}: {e}")
+
+        for info in addr_infos:
+            ip = ipaddress.ip_address(str(info[4][0]).split('%')[0])
+            if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+                ip = ip.ipv4_mapped
+            if not ip.is_global:
+                raise UnsafeURLError(f"{parsed.hostname} resolves to a non-public address")
+
+    @staticmethod
+    def _read_body(response, max_bytes, deadline):
+        """Read a streamed response body, stopping at max_bytes or the deadline.
+
+        Returns:
+            (body bytes, truncated flag). Sizes count decoded bytes, so a
+            compression bomb is capped like any other oversized body.
+        """
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=FETCH_CHUNK_BYTES):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                return b"".join(chunks)[:max_bytes], True
+            if time.monotonic() > deadline:
+                raise requests.exceptions.Timeout(f"download exceeded {MAX_FETCH_SECONDS}s")
+        return b"".join(chunks), False
+
+    def _fetch(self, url, headers, timeout, max_bytes, session=None):
+        """GET a URL with SSRF checks on every redirect hop and a body size cap.
+
+        Redirects are followed manually so each hop is validated before any
+        request is sent. The body is only read for HTTP 200 responses.
+
+        Returns:
+            (status_code, body bytes, truncated flag, lowercase Content-Type).
+        """
+        getter = session.get if session is not None else requests.get
+        deadline = time.monotonic() + MAX_FETCH_SECONDS
+        current = url
+
+        for _ in range(MAX_REDIRECTS + 1):
+            self._validate_public_url(current)
+            response = getter(
+                current, headers=headers, timeout=timeout, allow_redirects=False, stream=True
+            )
+            try:
+                location = response.headers.get('Location')
+                if response.status_code in REDIRECT_STATUS_CODES and location:
+                    current = urljoin(current, location)
+                    continue
+
+                content_type = response.headers.get('Content-Type', '').lower()
+                if response.status_code != HTTP_OK:
+                    return response.status_code, b"", False, content_type
+                body, truncated = self._read_body(response, max_bytes, deadline)
+                return response.status_code, body, truncated, content_type
+            finally:
+                response.close()
+
+        raise requests.exceptions.TooManyRedirects(f"more than {MAX_REDIRECTS} redirects: {url}")
+
+    def _fetch_html_text(self, url, headers, timeout, session=None):
+        """Fetch a page and return its cleaned text; raise RequestException on non-200."""
+        status, body, _, _ = self._fetch(url, headers, timeout, MAX_HTML_BYTES, session)
+        if status == HTTP_OK:
+            return self._extract_text_from_html(body)
+        raise requests.exceptions.RequestException(f"HTTP {status}")
+
     def _method_desktop(self, url, timeout):
         """Download method 1: Standard desktop User-Agent with academic headers"""
+        # No Accept-Encoding override: requests advertises only the encodings it
+        # can decode, whereas a hard-coded 'br' yields garbage without brotli
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1'
         }
-        response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if response.status_code == 200:
-            return self._extract_text_from_html(response.content)
-        raise requests.exceptions.RequestException(f"HTTP {response.status_code}")
+        return self._fetch_html_text(url, headers, timeout)
 
     def _method_mobile(self, url, timeout):
         """Download method 2: Mobile User-Agent"""
@@ -448,14 +562,10 @@ class ContentDownloader:
             'Accept-Language': 'en-US,en;q=0.9',
             'DNT': '1'
         }
-        response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if response.status_code == 200:
-            return self._extract_text_from_html(response.content)
-        raise requests.exceptions.RequestException(f"HTTP {response.status_code}")
+        return self._fetch_html_text(url, headers, timeout)
 
     def _method_session(self, url, timeout):
         """Download method 3: Session with cookies, referrer and academic-friendly headers"""
-        session = requests.Session()
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -464,10 +574,8 @@ class ContentDownloader:
             'DNT': '1',
             'Connection': 'keep-alive'
         }
-        response = session.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if response.status_code == 200:
-            return self._extract_text_from_html(response.content)
-        raise requests.exceptions.RequestException(f"HTTP {response.status_code}")
+        with requests.Session() as session:
+            return self._fetch_html_text(url, headers, timeout, session)
 
     def _extract_text_from_html(self, html_content):
         """Extract and clean text from HTML content"""

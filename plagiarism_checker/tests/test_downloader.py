@@ -35,6 +35,28 @@ class FakeResponse:
     def json(self) -> Any:
         return self._json_data
 
+    def iter_content(self, chunk_size: int = 1) -> Any:
+        """Yield the body in chunks, like a streamed requests.Response."""
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start:start + chunk_size]
+
+    def close(self) -> None:
+        """Mirror requests.Response.close (nothing to release)."""
+
+
+PUBLIC_IP = "93.184.216.34"
+
+
+def _addr_info(ip: str) -> list:
+    """Build a getaddrinfo-style result for a single IP address."""
+    return [(0, 0, 0, "", (ip, 0))]
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public IP so no test performs a real DNS lookup."""
+    monkeypatch.setattr(downloader.socket, "getaddrinfo", lambda host, *a, **k: _addr_info(PUBLIC_IP))
+
 
 @pytest.fixture
 def dl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., ContentDownloader]:
@@ -43,9 +65,9 @@ def dl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Content
     def _make(cache_only: bool = False) -> ContentDownloader:
         doc_path = tmp_path / "doc.txt"
         doc_path.write_text("document content")
-        downloader_instance = ContentDownloader(doc_path, cache_only)
-        downloader_instance.cache_dir = tmp_path / "cache"
-        downloader_instance.cache_dir.mkdir(exist_ok=True)
+        downloader_instance = ContentDownloader(
+            doc_path, cache_only, cache_dir=tmp_path / "cache"
+        )
         downloader_instance.cache_index_file = downloader_instance.cache_dir / "_index.tsv"
         return downloader_instance
 
@@ -802,3 +824,238 @@ def test_extract_title_empty_text_falls_back_to_untitled(dl: Callable[..., Conte
     """Empty content falls back to the "Untitled Source" placeholder."""
     downloader_instance = dl()
     assert downloader_instance._extract_title("") == "Untitled Source"
+
+
+# --- SSRF protection, size caps and redirect handling ---
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "127.0.0.1",
+        "10.1.2.3",
+        "192.168.0.10",
+        "169.254.169.254",
+        "100.64.0.1",
+        "0.0.0.0",
+        "::1",
+        "::ffff:127.0.0.1",
+        "fe80::1",
+    ],
+)
+def test_validate_public_url_rejects_non_public_addresses(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch, ip: str
+) -> None:
+    """Hosts resolving to loopback, private, link-local or mapped-private addresses are blocked."""
+    monkeypatch.setattr(downloader.socket, "getaddrinfo", lambda host, *a, **k: _addr_info(ip))
+    with pytest.raises(downloader.UnsafeURLError):
+        dl()._validate_public_url("http://internal.example/secret")
+
+
+@pytest.mark.parametrize(
+    "url", ["file:///etc/passwd", "ftp://example.com/x", "http:///nohost", "gopher://x"]
+)
+def test_validate_public_url_rejects_unsupported_urls(
+    dl: Callable[..., ContentDownloader], url: str
+) -> None:
+    """Only http(s) URLs with a host are allowed."""
+    with pytest.raises(downloader.UnsafeURLError):
+        dl()._validate_public_url(url)
+
+
+def test_validate_public_url_blocks_host_with_any_private_record(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with one public and one private record is rejected (DNS-mixing trick)."""
+    monkeypatch.setattr(
+        downloader.socket,
+        "getaddrinfo",
+        lambda host, *a, **k: _addr_info(PUBLIC_IP) + _addr_info("10.0.0.5"),
+    )
+    with pytest.raises(downloader.UnsafeURLError):
+        dl()._validate_public_url("http://mixed.example/")
+
+
+def test_validate_public_url_accepts_public_host(dl: Callable[..., ContentDownloader]) -> None:
+    """A host resolving to a public address passes validation."""
+    dl()._validate_public_url("https://example.com/page")
+
+
+def test_validate_public_url_dns_failure_is_a_connection_error(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolvable host surfaces as a ConnectionError, not an unsafe-URL block."""
+
+    def _fail(*a: object, **k: object) -> None:
+        raise downloader.socket.gaierror("no such host")
+
+    monkeypatch.setattr(downloader.socket, "getaddrinfo", _fail)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        dl()._validate_public_url("http://nonexistent.example/")
+
+
+def test_fetch_blocks_redirect_to_internal_address_before_requesting_it(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A public page redirecting to a cloud metadata IP is stopped before the second request."""
+    requested: list = []
+    resolved = {"public.example": PUBLIC_IP, "169.254.169.254": "169.254.169.254"}
+    monkeypatch.setattr(
+        downloader.socket, "getaddrinfo", lambda host, *a, **k: _addr_info(resolved[host])
+    )
+
+    def _get(url: str, **kwargs: Any) -> FakeResponse:
+        requested.append(url)
+        return FakeResponse(302, headers={"Location": "http://169.254.169.254/latest/meta-data"})
+
+    monkeypatch.setattr(downloader.requests, "get", _get)
+    with pytest.raises(downloader.UnsafeURLError):
+        dl()._method_desktop("http://public.example/start", 15)
+    assert requested == ["http://public.example/start"]
+
+
+def test_fetch_follows_safe_redirect_and_disables_automatic_redirects(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relative redirects are resolved and every request is sent with allow_redirects=False."""
+    calls: list = []
+
+    def _get(url: str, **kwargs: Any) -> FakeResponse:
+        calls.append((url, kwargs["allow_redirects"], kwargs["stream"]))
+        if url.endswith("/start"):
+            return FakeResponse(301, headers={"Location": "/final"})
+        return FakeResponse(200, content=HTML_PAGE.encode())
+
+    monkeypatch.setattr(downloader.requests, "get", _get)
+    text = dl()._method_desktop("http://example.com/start", 15)
+    assert "Real page content here." in text
+    assert calls == [
+        ("http://example.com/start", False, True),
+        ("http://example.com/final", False, True),
+    ]
+
+
+def test_fetch_gives_up_after_too_many_redirects(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redirect loop ends with TooManyRedirects after the configured limit."""
+    calls: list = []
+
+    def _get(url: str, **kwargs: Any) -> FakeResponse:
+        calls.append(url)
+        return FakeResponse(302, headers={"Location": "http://example.com/loop"})
+
+    monkeypatch.setattr(downloader.requests, "get", _get)
+    with pytest.raises(requests.exceptions.TooManyRedirects):
+        dl()._method_desktop("http://example.com/loop", 15)
+    assert len(calls) == downloader.MAX_REDIRECTS + 1
+
+
+def test_download_content_does_not_retry_unsafe_urls(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocked URL fails immediately: no retries, no sleeping, no request sent."""
+    monkeypatch.setattr(
+        downloader.socket, "getaddrinfo", lambda host, *a, **k: _addr_info("127.0.0.1")
+    )
+    sleeps: list = []
+    monkeypatch.setattr(downloader.time, "sleep", lambda s: sleeps.append(s))
+
+    def _no_request(*a: object, **k: object) -> None:
+        raise AssertionError("request must not be sent to a blocked URL")
+
+    monkeypatch.setattr(downloader.requests, "get", _no_request)
+    content, error = dl()._download_content("http://localhost:8080/admin")
+    assert content is None
+    assert error is not None and "unsafe" in error.lower()
+    assert sleeps == []
+
+
+def test_fetch_truncates_oversized_html_body(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An HTML body beyond the cap is cut off instead of being loaded whole."""
+    monkeypatch.setattr(downloader, "MAX_HTML_BYTES", 1000)
+    page = b"<html><body><p>" + b"word " * 5000 + b"</p></body></html>"
+    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: FakeResponse(200, content=page))
+    text = dl()._method_desktop("http://example.com/big", 15)
+    assert 0 < len(text) <= 1000
+
+
+def test_fetch_stops_reading_a_stalled_download(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A download exceeding the overall deadline fails with Timeout even if bytes keep trickling."""
+    monkeypatch.setattr(downloader, "MAX_FETCH_SECONDS", -1)
+    monkeypatch.setattr(
+        downloader.requests, "get", lambda *a, **k: FakeResponse(200, content=HTML_PAGE.encode())
+    )
+    with pytest.raises(requests.exceptions.Timeout):
+        dl()._method_desktop("http://example.com/slow", 15)
+
+
+def test_download_pdf_as_text_rejects_oversized_pdf(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PDF larger than the cap is rejected because a truncated PDF cannot be parsed."""
+    monkeypatch.setattr(downloader, "MAX_PDF_BYTES", 100)
+    response = FakeResponse(
+        200, content=b"%PDF-1.4 " + b"x" * 500, headers={"Content-Type": "application/pdf"}
+    )
+    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: response)
+    assert dl()._download_pdf_as_text("https://example.com/huge.pdf") is None
+
+
+def test_download_pdf_as_text_blocks_internal_pdf_url(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An internal PDF location (e.g. from Unpaywall metadata) is never requested."""
+    monkeypatch.setattr(
+        downloader.socket, "getaddrinfo", lambda host, *a, **k: _addr_info("192.168.1.1")
+    )
+
+    def _no_request(*a: object, **k: object) -> None:
+        raise AssertionError("request must not be sent to an internal address")
+
+    monkeypatch.setattr(downloader.requests, "get", _no_request)
+    assert dl()._download_pdf_as_text("http://router.local/paper.pdf") is None
+
+
+def test_method_desktop_does_not_force_accept_encoding(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The desktop request leaves Accept-Encoding to requests (a forced 'br' breaks without brotli)."""
+    seen: dict = {}
+
+    def _get(url: str, **kwargs: Any) -> FakeResponse:
+        seen.update(kwargs["headers"])
+        return FakeResponse(200, content=HTML_PAGE.encode())
+
+    monkeypatch.setattr(downloader.requests, "get", _get)
+    dl()._method_desktop("http://example.com", 15)
+    assert "Accept-Encoding" not in seen
+
+
+def test_fetch_via_unpaywall_drops_query_string_and_quotes_doi(
+    dl: Callable[..., ContentDownloader], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tracking query strings are not treated as part of the DOI, and the DOI is URL-quoted."""
+    urls: list = []
+
+    def _get(url: str, **kwargs: Any) -> FakeResponse:
+        urls.append(url)
+        return FakeResponse(404)
+
+    monkeypatch.setattr(downloader.requests, "get", _get)
+    dl()._fetch_via_unpaywall("https://doi.org/10.1000/abc(1)?utm_source=x&email=evil%40x.com#frag")
+    assert len(urls) == 1
+    assert urls[0].startswith("https://api.unpaywall.org/v2/10.1000/abc%281%29?email=")
+    assert "utm_source" not in urls[0] and "evil" not in urls[0]
+
+
+def test_downloader_uses_explicit_cache_dir(tmp_path: Path) -> None:
+    """An explicit cache_dir is used (and created) instead of the tool-folder default."""
+    target = tmp_path / "custom_cache"
+    instance = ContentDownloader(tmp_path / "doc.txt", cache_dir=target)
+    assert instance.cache_dir == target
+    assert target.is_dir()
