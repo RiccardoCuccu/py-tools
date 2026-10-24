@@ -9,15 +9,57 @@ Usage:
     python image_framer.py
     python image_framer.py --config my_config.yaml
     python image_framer.py --input photo.jpg --output framed.jpg
+
+Notes:
+    - Missing config keys fall back to the built-in defaults; unknown keys are an error.
+    - The output path must differ from the input path so the original is never overwritten.
+    - EXIF orientation is applied, so phone photos keep their upright orientation.
 """
 
 import argparse
-import os
+import sys
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+# Config keys holding file paths, resolved relative to the config file
+PATH_KEYS = ('input_path', 'output_path', 'font_path')
+
+# Config keys holding RGB colors
+COLOR_KEYS = ('outer_frame_color', 'inner_frame_color', 'padding_color', 'text_color')
+
+# Config keys holding label text
+TEXT_KEYS = ('top_text', 'bottom_text', 'left_text', 'right_text')
+
+# Integer config keys mapped to their minimum allowed value
+INT_KEY_MINIMUMS = {
+    'font_size': 1,
+    'outer_frame_thickness': 0,
+    'inner_frame_thickness': 0,
+    'target_inner_size': 1,
+    'quality': 1,
+}
+
+# Valid ranges
+MAX_QUALITY = 100
+COLOR_CHANNELS = 3
+MIN_CHANNEL_VALUE = 0
+MAX_CHANNEL_VALUE = 255
+
+# Opaque alpha value for the text layer
+OPAQUE_ALPHA = 255
+
+# Name of the generated default configuration file
+DEFAULT_CONFIG_NAME = 'config_default.yaml'
+
+# Fonts tried in order when no usable font_path is configured (Windows, Linux, macOS)
+COMMON_FONTS = ("Calibri.ttf", "DejaVuSans.ttf", "Helvetica.ttc")
+
+
+class ConfigError(ValueError):
+    """Raised when the configuration file or its values are unusable."""
 
 
 def get_default_config() -> Dict[str, Any]:
@@ -44,7 +86,7 @@ def get_default_config() -> Dict[str, Any]:
 
 def create_default_config(config_path: str) -> None:
     """Create default YAML configuration file with comments."""
-    
+
     yaml_content = """# Image Frame Editor Configuration File
 # Generated automatically - modify as needed
 # Relative paths are resolved from this config file's directory
@@ -75,77 +117,144 @@ text_color: [255, 255, 255]
 # Output quality (1-100, higher is better)
 quality: 95
 """
-    
+
     with open(config_path, 'w', encoding='utf-8') as f:
         f.write(yaml_content)
-    
+
     print(f"Default configuration file created: {config_path}")
 
 
-def find_or_create_config() -> str:
+def find_or_create_config(script_dir: Optional[Path] = None) -> str:
     """
     Find existing YAML config in script directory or create default one.
-    Returns path to the config file to use.
+
+    Always exits: with status 1 when YAML files exist (the user must choose one
+    with -c/--config), or with status 0 after creating a default config.
     """
-    script_dir = Path(__file__).parent
-    
+    if script_dir is None:
+        script_dir = Path(__file__).parent
+
     # Search for any YAML files in the script directory
-    yaml_files = list(script_dir.glob('*.yaml')) + list(script_dir.glob('*.yml'))
-    
+    yaml_files = sorted(script_dir.glob('*.yaml')) + sorted(script_dir.glob('*.yml'))
+
     if yaml_files:
         # Multiple or single YAML files found - user must specify which one
         print("\nWARNING: Configuration files found in script directory:")
         for i, yaml_file in enumerate(yaml_files, 1):
             print(f"  {i}. {yaml_file.name}")
-        
+
         print("\nPlease specify which configuration file to use with -c/--config option:")
         print(f"  Example: python {Path(__file__).name} -c {yaml_files[0].name}")
         print(f"  Example: python {Path(__file__).name} --config {yaml_files[0].name}\n")
-        
-        exit(1)
-    else:
-        # No YAML files found, create default
-        default_config_path = script_dir / 'config_default.yaml'
-        print(f"\nNo configuration files found. Creating default configuration...")
-        create_default_config(str(default_config_path))
-        print(f"\nPlease edit '{default_config_path.name}' with your settings, then run:")
-        print(f"  python {Path(__file__).name} -c {default_config_path.name}\n")
-        
-        exit(0)
+
+        sys.exit(1)
+
+    # No YAML files found, create default
+    default_config_path = script_dir / DEFAULT_CONFIG_NAME
+    print("\nNo configuration files found. Creating default configuration...")
+    create_default_config(str(default_config_path))
+    print(f"\nPlease edit '{default_config_path.name}' with your settings, then run:")
+    print(f"  python {Path(__file__).name} -c {default_config_path.name}\n")
+
+    sys.exit(0)
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    """Load configuration from YAML file and resolve relative paths."""
-    
-    # Check if config file exists
-    if not os.path.exists(config_path):
-        print(f"ERROR: Configuration file not found: {config_path}")
-        print(f"Please check the file path and try again.")
-        exit(1)
-    
+    """
+    Load configuration from a YAML file, apply defaults, and resolve relative paths.
+
+    Raises:
+        ConfigError: the file is missing, unreadable, not valid YAML, not a mapping,
+            or contains keys that are not recognised.
+    """
+    path = Path(config_path)
+    if not path.is_file():
+        raise ConfigError(f"Configuration file not found: {config_path}")
+
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             raw = yaml.safe_load(f)
-            config: Dict[str, Any] = raw if isinstance(raw, dict) else {}
     except yaml.YAMLError as e:
-        print(f"ERROR: Failed to parse YAML file: {e}")
-        exit(1)
-    except Exception as e:
-        print(f"ERROR: Failed to read configuration file: {e}")
-        exit(1)
-    
-    # Get the directory where the config file is located
-    config_dir = Path(config_path).parent
-    
-    # Resolve relative paths relative to config file location
-    for path_key in ['input_path', 'output_path', 'font_path']:
-        if path_key in config and config[path_key]:
-            path = Path(config[path_key])
-            # If path is relative, make it relative to config file directory
-            if not path.is_absolute():
-                config[path_key] = str(config_dir / path)
-    
+        raise ConfigError(f"Failed to parse YAML file: {e}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"Failed to read configuration file: {e}") from e
+
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError("Configuration file must contain a mapping of settings")
+
+    config = get_default_config()
+    unknown = sorted(set(raw) - set(config), key=str)
+    if unknown:
+        raise ConfigError(f"Unknown configuration key(s): {', '.join(map(str, unknown))}")
+    config.update(raw)
+
+    # Resolve relative paths relative to the config file location
+    config_dir = path.parent
+    for path_key in PATH_KEYS:
+        value = config[path_key]
+        if value:
+            resolved = Path(str(value))
+            if not resolved.is_absolute():
+                config[path_key] = str(config_dir / resolved)
+
     return config
+
+
+def _parse_color(key: str, value: Any) -> Tuple[int, int, int]:
+    """Return value as an (R, G, B) tuple, or raise ConfigError."""
+    valid = (
+        isinstance(value, (list, tuple))
+        and len(value) == COLOR_CHANNELS
+        and all(
+            isinstance(c, int) and not isinstance(c, bool)
+            and MIN_CHANNEL_VALUE <= c <= MAX_CHANNEL_VALUE
+            for c in value
+        )
+    )
+    if not valid:
+        raise ConfigError(
+            f"'{key}' must be a list of {COLOR_CHANNELS} integers "
+            f"between {MIN_CHANNEL_VALUE} and {MAX_CHANNEL_VALUE}, got {value!r}"
+        )
+    return (value[0], value[1], value[2])
+
+
+def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return a validated copy of config ready for process_image(**settings).
+
+    Colors become tuples, empty text values become '', and numeric settings are
+    range checked.
+
+    Raises:
+        ConfigError: a value has the wrong type or is out of range.
+    """
+    settings = dict(config)
+
+    for key in COLOR_KEYS:
+        settings[key] = _parse_color(key, settings[key])
+
+    for key, minimum in INT_KEY_MINIMUMS.items():
+        value = settings[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            raise ConfigError(f"'{key}' must be an integer >= {minimum}, got {value!r}")
+    if settings['quality'] > MAX_QUALITY:
+        raise ConfigError(f"'quality' must be at most {MAX_QUALITY}, got {settings['quality']!r}")
+
+    for key in TEXT_KEYS:
+        value = settings[key]
+        settings[key] = '' if value is None else str(value)
+
+    for key in PATH_KEYS:
+        value = settings[key]
+        settings[key] = '' if value is None else str(value)
+    for key in ('input_path', 'output_path'):
+        if not settings[key]:
+            raise ConfigError(f"'{key}' must not be empty")
+
+    return settings
 
 
 def get_default_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -153,27 +262,56 @@ def get_default_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.Image
     Get a default TrueType font from the system.
     Tries common system fonts in order of availability.
     """
-    # List of common fonts available on different systems
-    common_fonts = [
-        # Windows
-        "Calibri.ttf",
-        # Linux
-        "DejaVuSans.ttf",
-        # macOS
-        "Helvetica.ttc",
-    ]
-    
     # Try to find and load a system font
-    for font_name in common_fonts:
+    for font_name in COMMON_FONTS:
         try:
             font = ImageFont.truetype(font_name, font_size)
             return font
-        except (OSError, IOError):
+        except OSError:
             continue
-    
-    # If no TrueType font found, fall back to default bitmap font
-    print("WARNING: No TrueType fonts found on system, using basic bitmap font (size cannot be changed)")
-    return ImageFont.load_default()
+
+    # Pillow >= 10.1 ships a scalable fallback font
+    try:
+        return ImageFont.load_default(size=font_size)
+    except TypeError:
+        print("WARNING: No TrueType fonts found on system, using basic bitmap font (size cannot be changed)")
+        return ImageFont.load_default()
+
+
+def load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Load font_path at font_size, falling back to a system font with a warning."""
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, font_size)
+        except OSError as e:
+            print(f"WARNING: Could not load font '{font_path}' ({e}), using default system font")
+    return get_default_font(font_size)
+
+
+def scaled_size(orig_w: int, orig_h: int, target: int) -> Tuple[int, int]:
+    """Return (width, height) scaled so the longest side equals target (min 1 px)."""
+    scale = target / max(orig_w, orig_h)
+    return max(1, round(orig_w * scale)), max(1, round(orig_h * scale))
+
+
+def same_file_path(first: str, second: str) -> bool:
+    """Return True if both paths point at the same file, existing or not."""
+    return Path(first).resolve() == Path(second).resolve()
+
+
+def load_rgb_image(input_path: str, background: Tuple[int, int, int]) -> Image.Image:
+    """
+    Open an image as RGB, upright and with any transparency flattened onto background.
+
+    The file handle is released before returning.
+    """
+    with Image.open(input_path) as src:
+        img = ImageOps.exif_transpose(src)
+        if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+            rgba = img.convert("RGBA")
+            canvas = Image.new("RGBA", rgba.size, background + (OPAQUE_ALPHA,))
+            return Image.alpha_composite(canvas, rgba).convert("RGB")
+        return img.convert("RGB")
 
 
 def process_image(
@@ -201,62 +339,48 @@ def process_image(
     3) Add an inner colored frame of `inner_frame_thickness` pixels all around.
     4) Add an outer colored frame of `outer_frame_thickness` pixels all around.
     5) Draw four optional strings centered on each side of the outer frame.
-    """
-    # Load original image
-    img = Image.open(input_path).convert("RGB")
 
-    # --- Step 1: Resize to longest side = target_inner_size ---
-    orig_w, orig_h = img.size
-    longest_side = max(orig_w, orig_h)
-    scale = target_inner_size / longest_side
-    new_w = int(orig_w * scale)
-    new_h = int(orig_h * scale)
+    Raises:
+        ValueError: output_path is the same file as input_path.
+        OSError: the input cannot be read as an image or the output cannot be written.
+    """
+    if same_file_path(input_path, output_path):
+        raise ValueError(f"Output path must differ from the input path: {output_path}")
+
+    # Resize to longest side = target_inner_size
+    img = load_rgb_image(input_path, padding_color)
+    new_w, new_h = scaled_size(img.width, img.height, target_inner_size)
     img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    # --- Step 2: Pad to square with configurable color bars ---
+    # Pad to square with configurable color bars, centering the resized image
     square_size = target_inner_size
     square_img = Image.new("RGB", (square_size, square_size), padding_color)
-
-    # Center the resized image on the square canvas
     offset_x = (square_size - new_w) // 2
     offset_y = (square_size - new_h) // 2
     square_img.paste(img, (offset_x, offset_y))
 
-    # --- Step 3: Add inner frame ---
+    # Add inner frame
     size_with_inner_frame = square_size + 2 * inner_frame_thickness
     img_with_inner_frame = Image.new("RGB", (size_with_inner_frame, size_with_inner_frame), inner_frame_color)
     img_with_inner_frame.paste(square_img, (inner_frame_thickness, inner_frame_thickness))
 
-    # --- Step 4: Add outer frame ---
+    # Add outer frame
     final_size = size_with_inner_frame + 2 * outer_frame_thickness
     final_img = Image.new("RGB", (final_size, final_size), outer_frame_color)
     final_img.paste(img_with_inner_frame, (outer_frame_thickness, outer_frame_thickness))
 
-    # --- Step 5: Draw text on each side of the outer frame ---
+    # Draw text on each side of the outer frame
     draw = ImageDraw.Draw(final_img)
-
-    # Load font - use default if font_path is empty or invalid
-    try:
-        if font_path and os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, font_size)
-        else:
-            # Use system default font with specified size
-            font = get_default_font(font_size)
-            if font_path:
-                print(f"WARNING: Font not found at '{font_path}', using default system font")
-    except Exception as e:
-        print(f"WARNING: Error loading font: {e}. Using default system font")
-        font = get_default_font(font_size)
+    font = load_font(font_path, font_size)
 
     def draw_centered_horizontal_text(text: str, y: int) -> None:
-        """Draw a single-line text horizontally centered at given y coordinate."""
+        """Draw a single-line text horizontally centered within the frame band at y."""
         if not text:
             return
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        x = (final_size - text_width) // 2
-        y_center = y + (outer_frame_thickness - text_height) // 2
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        # Subtract the bbox origin so the visible glyphs, not the pen, are centered
+        x = (final_size - (right - left)) // 2 - left
+        y_center = y + (outer_frame_thickness - (bottom - top)) // 2 - top
         draw.text((x, y_center), text, font=font, fill=text_color)
 
     def draw_centered_vertical_text(text: str, x: int, rotate_90_clockwise: bool) -> None:
@@ -267,13 +391,10 @@ def process_image(
         temp_img = Image.new("RGBA", (final_size, final_size), (0, 0, 0, 0))
         temp_draw = ImageDraw.Draw(temp_img)
 
-        bbox = temp_draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        temp_x = (final_size - text_width) // 2
-        temp_y = (final_size - text_height) // 2
-        temp_draw.text((temp_x, temp_y), text, font=font, fill=text_color + (255,))
+        left, top, right, bottom = temp_draw.textbbox((0, 0), text, font=font)
+        temp_x = (final_size - (right - left)) // 2 - left
+        temp_y = (final_size - (bottom - top)) // 2 - top
+        temp_draw.text((temp_x, temp_y), text, font=font, fill=text_color + (OPAQUE_ALPHA,))
 
         angle = 90 if rotate_90_clockwise else -90
         rotated = temp_img.rotate(angle, expand=True)
@@ -284,7 +405,6 @@ def process_image(
 
         final_img.paste(rotated, (paste_x, paste_y), rotated)
 
-    # Draw text on all sides
     draw_centered_horizontal_text(top_text, y=0)
     draw_centered_horizontal_text(bottom_text, y=final_size - outer_frame_thickness)
     draw_centered_vertical_text(left_text, x=0, rotate_90_clockwise=True)
@@ -294,8 +414,8 @@ def process_image(
     final_img.save(output_path, quality=quality)
 
 
-def main():
-    """Parse arguments, load YAML config, and process the image."""
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Parse command-line arguments (from argv, or sys.argv if None)."""
     parser = argparse.ArgumentParser(
         description='Add colored frames and text to images'
     )
@@ -314,31 +434,37 @@ def main():
         type=str,
         help='Output image path (overrides config file)'
     )
-    
-    args = parser.parse_args()
-    
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Parse arguments, load YAML config, and process the image. Returns the exit code."""
+    args = parse_args(argv)
+
     # Find or create config file if not specified
     config_path = args.config if args.config else find_or_create_config()
-    
-    # Load configuration
-    config = load_config(config_path)
-    
-    # Override with command line arguments if provided
-    if args.input:
-        config['input_path'] = args.input
-    if args.output:
-        config['output_path'] = args.output
-    
-    # Convert color lists to tuples
-    config['outer_frame_color'] = tuple(config['outer_frame_color'])
-    config['inner_frame_color'] = tuple(config['inner_frame_color'])
-    config['padding_color'] = tuple(config['padding_color'])
-    config['text_color'] = tuple(config['text_color'])
-    
-    # Process image
-    process_image(**config)
-    print(f"Image processed successfully: {config['output_path']}")
+
+    try:
+        config = load_config(config_path)
+
+        # Override with command line arguments if provided
+        if args.input:
+            config['input_path'] = args.input
+        if args.output:
+            config['output_path'] = args.output
+
+        settings = validate_config(config)
+        process_image(**settings)
+    except ConfigError as e:
+        print(f"ERROR: {e}")
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"ERROR: Could not process image: {e}")
+        return 1
+
+    print(f"Image processed successfully: {settings['output_path']}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
