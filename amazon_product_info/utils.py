@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Shared utilities - all helper functions, data models, and common utilities for the scraper"""
 
-import asyncio
 import logging
 import re
 import sys
@@ -9,6 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 
 import requests
 
@@ -16,6 +16,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config
 
 logger = logging.getLogger(__name__)
+
+# Digits in a thousands group ("1.234" / "1,234" are thousands, "44,95" is a decimal)
+THOUSANDS_GROUP_DIGITS = 3
+
+# Browser-like User-Agent for short URL expansion (bare requests get blocked)
+SHORT_URL_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+# Whitespace used as a thousands separator ("1 234,56", including NBSP forms)
+_THOUSANDS_SPACE_RE = re.compile(r'(?<=\d)[   ](?=\d{3}(?!\d))')
+_NUMBER_TOKEN_RE = re.compile(r'\d[\d.,]*')
+_AMAZON_HOST_RE = re.compile(
+    r'(?:^|\.)amazon\.(co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2,3})$'
+)
 
 # Data models
 
@@ -104,41 +120,70 @@ class BaseFetcher(ABC):
 
 # Price parsing utilities
 
-def parse_price_text(text: str) -> Optional[float]:
-    """Parse price from text like '44,95€' or '$19.99' and validate range"""
-    if not text:
+def _number_token_to_float(token: str) -> Optional[float]:
+    """Convert a digit/separator token such as '1.234,56' or '1,234.56' to a float"""
+    token = token.rstrip('.,')
+    if not token:
         return None
-        
+
+    last_dot = token.rfind('.')
+    last_comma = token.rfind(',')
+    decimal_sep = None
+
+    if last_dot >= 0 and last_comma >= 0:
+        # When both appear, the one that comes last is the decimal separator
+        decimal_sep = '.' if last_dot > last_comma else ','
+    else:
+        sep = '.' if last_dot >= 0 else ',' if last_comma >= 0 else None
+        if sep is not None and token.count(sep) == 1:
+            integer_part, fraction_part = token.split(sep)
+            # "0,001" is still a decimal; "1.234" / "1,234" are thousands groups
+            is_thousands = (
+                len(fraction_part) == THOUSANDS_GROUP_DIGITS and integer_part != '0'
+            )
+            decimal_sep = None if is_thousands else sep
+
+    normalized = ''.join(
+        '.' if char == decimal_sep else char
+        for char in token
+        if char.isascii() and char.isdigit() or char == decimal_sep
+    )
     try:
-        cleaned = re.sub(r'[€$£¥₹₺\s]', '', text.strip())
-        
-        if re.match(r'^\d+,\d{2}$', cleaned):
-            cleaned = cleaned.replace(',', '.')
-        elif ',' in cleaned and '.' in cleaned:
-            cleaned = cleaned.replace('.', '').replace(',', '.')
-        
-        price = float(cleaned)
-        return price if config.MIN_VALID_PRICE <= price <= config.MAX_VALID_PRICE else None
-        
-    except (ValueError, AttributeError):
+        return float(normalized)
+    except ValueError:
         return None
+
+
+def parse_price_text(text: str) -> Optional[float]:
+    """Parse price from text like '44,95€', '$19.99' or '1,234.56' and validate range"""
+    if not text or not isinstance(text, str):
+        return None
+
+    match = _NUMBER_TOKEN_RE.search(_THOUSANDS_SPACE_RE.sub('', text.strip()))
+    if not match:
+        return None
+
+    price = _number_token_to_float(match.group(0))
+    if price is None:
+        return None
+    return price if config.MIN_VALID_PRICE <= price <= config.MAX_VALID_PRICE else None
 
 
 def parse_price_from_parts(whole: str, fraction: str) -> Optional[float]:
     """Parse price from separate whole and fraction parts like '44' and '95'"""
     if not whole or not fraction:
         return None
-        
+
     try:
         whole_clean = whole.strip().replace(',', '').replace('.', '').replace(' ', '')
         fraction_clean = fraction.strip()
-        
+
         if not whole_clean or not fraction_clean:
             return None
-        
+
         price = float(f"{whole_clean}.{fraction_clean}")
         return price if config.MIN_VALID_PRICE <= price <= config.MAX_VALID_PRICE else None
-        
+
     except ValueError:
         return None
 
@@ -156,35 +201,44 @@ def parse_price_flexible(text: Optional[str] = None, whole: Optional[str] = None
 
 def extract_asin(url: str) -> Optional[str]:
     """Extract 10-character ASIN from Amazon product URL using multiple patterns"""
-    match = re.search(r'/dp/([A-Z0-9]{10})(?:/|$|\?)', url)
-    if match:
-        return match.group(1)
-    
-    match = re.search(r'/gp/product/([A-Z0-9]{10})', url)
-    if match:
-        return match.group(1)
-    
-    match = re.search(r'/gp/aw/d/([A-Z0-9]{10})(?:/|$|\?)', url)
-    if match:
-        return match.group(1)
-    
-    match = re.search(r'[?&]ASIN=([A-Z0-9]{10})', url)
-    if match:
-        return match.group(1)
-    
+    patterns = (
+        r'/dp/([A-Z0-9]{10})(?:[/?#]|$)',
+        r'/gp/product/([A-Z0-9]{10})(?:[/?#]|$)',
+        r'/gp/aw/d/([A-Z0-9]{10})(?:[/?#]|$)',
+        r'[?&]ASIN=([A-Z0-9]{10})(?:[&#]|$)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
     return None
+
+
+def _get_hostname(url: str) -> Optional[str]:
+    """Return the lowercase hostname of a URL, tolerating a missing scheme"""
+    candidate = url if '//' in url else f'//{url}'
+    try:
+        return urlparse(candidate).hostname
+    except ValueError:
+        return None
 
 
 def is_short_url(url: str) -> bool:
     """Check if URL is an Amazon short URL that needs expansion"""
-    return any(domain in url.lower() for domain in config.SHORT_URL_DOMAINS)
+    host = _get_hostname(url.strip())
+    if not host:
+        return False
+    return any(host == d or host.endswith(f'.{d}') for d in config.SHORT_URL_DOMAINS)
 
 
 def extract_domain(url: str) -> Optional[str]:
-    """Extract Amazon domain from URL like 'amazon.it' or 'amazon.co.uk'"""
-    match = re.search(r'amazon\.(co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2,3})', url, re.IGNORECASE)
+    """Extract Amazon domain from the URL host like 'amazon.it' or 'amazon.co.uk'"""
+    host = _get_hostname(url.strip())
+    if not host:
+        return None
+    match = _AMAZON_HOST_RE.search(host)
     if match:
-        return f"amazon.{match.group(1).lower()}"
+        return f"amazon.{match.group(1)}"
     return None
 
 
@@ -192,31 +246,39 @@ def normalize_url(url: str) -> Optional[str]:
     """Normalize URL by adding https:// prefix if missing"""
     if url.startswith(('http://', 'https://')):
         return url
-    
+
     if is_short_url(url):
         return f"https://{url}"
     elif url.startswith('amazon.'):
         return f"https://www.{url}"
     elif url.startswith('www.amazon.'):
         return f"https://{url}"
-    
+
     return None
 
 
-def expand_short_url(url: str, timeout: int = 10) -> Optional[str]:
+def expand_short_url(url: str, timeout: Optional[int] = None) -> Optional[str]:
     """Expand Amazon short URLs by following HTTP redirects"""
     if not is_short_url(url):
         return None
-    
+
+    if timeout is None:
+        timeout = config.SHORT_URL_EXPANSION_TIMEOUT
+
     normalized = normalize_url(url)
     if normalized:
         url = normalized
-    
+
     try:
         logger.info(f"[URL] Expanding short URL: {url}")
-        response = requests.get(url, allow_redirects=True, timeout=timeout, stream=True)
-        expanded_url = response.url
-        response.close()
+        with requests.get(
+            url,
+            allow_redirects=True,
+            timeout=timeout,
+            stream=True,
+            headers={"User-Agent": SHORT_URL_USER_AGENT},
+        ) as response:
+            expanded_url = response.url
         logger.info(f"[URL] Expanded to: {expanded_url}")
         return expanded_url
     except requests.RequestException as e:
@@ -229,19 +291,19 @@ def process_amazon_url(url: str) -> Optional[str]:
     normalized = normalize_url(url)
     if normalized:
         url = normalized
-    
+
     if is_short_url(url):
         expanded = expand_short_url(url)
         if not expanded:
             return None
         url = expanded
-    
+
     asin = extract_asin(url)
     domain = extract_domain(url)
-    
+
     if not asin or not domain:
         return None
-    
+
     return f"https://{domain}/dp/{asin}"
 
 

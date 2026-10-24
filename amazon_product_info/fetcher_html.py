@@ -32,8 +32,8 @@ class HTTPSessionManager:
                 if cls._instance is None or cls._instance.closed:
                     timeout = aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT)
                     connector = aiohttp.TCPConnector(
-                        limit=100,
-                        limit_per_host=10,
+                        limit=config.HTML_CONNECTION_POOL_LIMIT,
+                        limit_per_host=config.HTML_CONNECTION_POOL_LIMIT_PER_HOST,
                         ttl_dns_cache=300
                     )
                     cls._instance = aiohttp.ClientSession(
@@ -76,7 +76,8 @@ class HTMLFetcher(BaseFetcher):
             "User-Agent": random.choice(config.USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
+            # No "br": aiohttp cannot decode Brotli without the optional brotli package
+            "Accept-Encoding": "gzip, deflate",
             "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",

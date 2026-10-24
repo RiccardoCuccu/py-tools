@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PA-API Fetcher - Amazon Product Advertising API 5.0 fetcher with all related functions"""
 
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 
@@ -48,7 +49,7 @@ class APIFetcher(BaseFetcher):
             self.api = AmazonApi(
                 key=config.PA_API_ACCESS_KEY,
                 secret=config.PA_API_SECRET_KEY,
-                tag="",
+                tag=config.PA_API_PARTNER_TAG or "",
                 country=self.country,
                 throttling=config.PA_API_THROTTLING
             )
@@ -75,7 +76,8 @@ class APIFetcher(BaseFetcher):
             return None
         
         try:
-            items = self.api.get_items(asin)
+            # The SDK call is blocking (and throttles itself), keep it off the event loop
+            items = await asyncio.to_thread(self.api.get_items, asin)
             
             if not items or len(items) == 0:
                 logger.warning(f"[PA-API] No data returned for ASIN: {asin}")
@@ -89,8 +91,8 @@ class APIFetcher(BaseFetcher):
     
     async def fetch_batch(self, urls: list[str]) -> Dict[str, Optional[Dict[str, Any]]]:
         """Fetch product data for multiple URLs in one API call (up to 10 URLs)"""
-        if not urls or len(urls) > 10:
-            raise ValueError("Batch size must be 1-10 URLs")
+        if not urls or len(urls) > config.PA_API_MAX_BATCH_SIZE:
+            raise ValueError(f"Batch size must be 1-{config.PA_API_MAX_BATCH_SIZE} URLs")
         
         url_to_asin = {}
         asins = []
@@ -104,7 +106,9 @@ class APIFetcher(BaseFetcher):
             return {url: None for url in urls}
         
         try:
-            items = self.api.get_items(*asins)
+            # The SDK takes the ASINs as ONE list argument; extra positional
+            # arguments would be read as condition/merchant filters
+            items = await asyncio.to_thread(self.api.get_items, list(dict.fromkeys(asins)))
             
             asin_to_data = {
                 item.asin: self._extract_item_data(item)
@@ -125,17 +129,9 @@ class APIFetcher(BaseFetcher):
             if item.item_info and item.item_info.title and item.item_info.title.display_value:
                 product_name = item.item_info.title.display_value
             
-            price = None
-            if item.offers and item.offers.listings and len(item.offers.listings) > 0:
-                listing = item.offers.listings[0]
-                if listing.price and listing.price.display_amount:
-                    price_str = listing.price.display_amount
-                    price = parse_price_flexible(text=price_str)
-                    if price is None:
-                        logger.warning(f"[PA-API] Price parsing failed: {price_str}")
-            
-            image_url = None
-            
+            price = self._extract_price(item)
+            image_url = self._extract_image_url(item)
+
             if product_name:
                 logger.debug(f"[PA-API] Retrieved: {product_name[:80]}...")
             if price:
@@ -151,6 +147,41 @@ class APIFetcher(BaseFetcher):
             logger.error(f"[PA-API] Item data extraction failed: {e}")
             return None
     
+    @staticmethod
+    def _extract_price(item) -> Optional[float]:
+        """Return the first listing price, preferring the numeric amount over display text"""
+        listings = item.offers.listings if item.offers else None
+        if not listings:
+            return None
+
+        listing_price = listings[0].price
+        if not listing_price:
+            return None
+
+        amount = getattr(listing_price, 'amount', None)
+        if isinstance(amount, (int, float)) and not isinstance(amount, bool):
+            if config.MIN_VALID_PRICE <= amount <= config.MAX_VALID_PRICE:
+                return float(amount)
+
+        display_amount = getattr(listing_price, 'display_amount', None)
+        if display_amount:
+            price = parse_price_flexible(text=display_amount)
+            if price is None:
+                logger.warning(f"[PA-API] Price parsing failed: {display_amount}")
+            return price
+        return None
+
+    @staticmethod
+    def _extract_image_url(item) -> Optional[str]:
+        """Return the large primary image URL when the item has one"""
+        images = getattr(item, 'images', None)
+        primary = getattr(images, 'primary', None)
+        for size in ('large', 'medium'):
+            url = getattr(getattr(primary, size, None), 'url', None)
+            if isinstance(url, str) and url.startswith('http'):
+                return url
+        return None
+
     async def close(self):
         """Cleanup resources - PA-API client doesn't require cleanup"""
         pass

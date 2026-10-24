@@ -17,9 +17,9 @@ class BrowserFetcher(BaseFetcher):
     
     def __init__(self):
         """Initialize browser fetcher"""
-        self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._context = None
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._context: Any = None
         self._initialized = False
         logger.info("[Browser] Fetcher initialized")
     
@@ -293,14 +293,23 @@ class BrowserFetcher(BaseFetcher):
                     pass
     
     async def close(self):
-        """Cleanup browser resources"""
-        try:
-            if self._context:
-                await self._context.close()
-            if self._browser:
-                await self._browser.close()
-            if self._playwright:
-                await self._playwright.stop()
-            logger.debug("[Browser] Resources cleaned up")
-        except Exception as e:
-            logger.error(f"[Browser] Cleanup failed: {e}")
+        """Cleanup browser resources, each step guarded so one failure cannot leak the rest"""
+        resources = (
+            ("context", self._context, "close"),
+            ("browser", self._browser, "close"),
+            ("playwright", self._playwright, "stop"),
+        )
+        # Reset first so a later fetch re-initializes instead of reusing dead handles
+        self._context: Any = None
+        self._browser = None
+        self._playwright: Any = None
+        self._initialized = False
+
+        for label, resource, method in resources:
+            if resource is None:
+                continue
+            try:
+                await getattr(resource, method)()
+            except Exception as e:
+                logger.error(f"[Browser] Cleanup failed ({label}): {e}")
+        logger.debug("[Browser] Resources cleaned up")

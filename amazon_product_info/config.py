@@ -20,7 +20,7 @@ FETCHER_ORDER = ['api', 'html', 'browser']
 
 # PA-API fetcher configuration (fetcher_api.py)
 
-# Credentials (access_key, secret_key) are loaded from config.json
+# Credentials (access_key, secret_key, partner_tag) are loaded from config.json
 
 # Target Amazon marketplace
 # Supported: IT, US, UK, DE, FR, ES, CA, JP, IN, AU, BR, MX, NL, PL, SE, SG, TR, AE, SA, EG
@@ -38,6 +38,9 @@ ENABLE_API_BATCH_REQUESTS = True
 # Batch size for API requests (max 10 per Amazon PA-API limit)
 API_BATCH_SIZE = 5
 
+# Hard PA-API limit on ASINs per GetItems request (do not edit)
+PA_API_MAX_BATCH_SIZE = 10
+
 # HTML scraper fetcher configuration (fetcher_html.py)
 
 # User-Agent rotation pool for HTML requests
@@ -53,8 +56,8 @@ USER_AGENTS = [
 ]
 
 # HTTP connection pool settings
-HTML_CONNECTION_POOL_LIMIT = 10
-HTML_CONNECTION_POOL_LIMIT_PER_HOST = 5
+HTML_CONNECTION_POOL_LIMIT = 100
+HTML_CONNECTION_POOL_LIMIT_PER_HOST = 10
 
 # Browser fetcher configuration (fetcher_browser.py)
 
@@ -178,29 +181,46 @@ if CURRENCY_SYMBOL is None:
 
 # PA-API credentials (loaded from config.json)
 
-def load_api_credentials():
-    """Load PA-API credentials from config.json file"""
-    config_file = Path(__file__).parent / 'config.json'
-    
+CREDENTIALS_FILE = Path(__file__).parent / 'config.json'
+
+
+def load_api_credentials(config_file=None):
+    """
+    Load PA-API credentials from a JSON file.
+
+    Returns a dict with access_key, secret_key and partner_tag (possibly empty),
+    or None if the file is missing or the keys are absent or not strings.
+    """
+    config_file = Path(config_file) if config_file else CREDENTIALS_FILE
+
     if not config_file.exists():
         return None
-    
+
     try:
         with open(config_file, 'r', encoding='utf-8') as f:
             credentials = json.load(f)
-        
-        access_key = credentials.get('access_key')
-        secret_key = credentials.get('secret_key')
-        
-        if not access_key or not secret_key or not isinstance(access_key, str) or not isinstance(secret_key, str):
-            logging.warning("[Config] config.json exists but credentials are empty or invalid")
-            return None
-        
-        return credentials
-        
-    except (json.JSONDecodeError, Exception) as e:
-        logging.warning(f"[Config] Failed to load config.json: {e}")
+    except (OSError, ValueError) as e:
+        # Never log file content: it holds secrets
+        logging.warning(f"[Config] Failed to load {config_file.name}: {type(e).__name__}")
         return None
+
+    if not isinstance(credentials, dict):
+        logging.warning(f"[Config] {config_file.name} must contain a JSON object")
+        return None
+
+    access_key = credentials.get('access_key')
+    secret_key = credentials.get('secret_key')
+    partner_tag = credentials.get('partner_tag') or ''
+
+    if (
+        not access_key or not secret_key
+        or not isinstance(access_key, str) or not isinstance(secret_key, str)
+        or not isinstance(partner_tag, str)
+    ):
+        logging.warning(f"[Config] {config_file.name} exists but credentials are empty or invalid")
+        return None
+
+    return {'access_key': access_key, 'secret_key': secret_key, 'partner_tag': partner_tag}
 
 
 _api_credentials = load_api_credentials()
@@ -208,6 +228,9 @@ _api_credentials = load_api_credentials()
 # PA-API credentials (None if config.json not found or invalid)
 PA_API_ACCESS_KEY = _api_credentials.get('access_key') if _api_credentials else None
 PA_API_SECRET_KEY = _api_credentials.get('secret_key') if _api_credentials else None
+
+# Associate tag required by PA-API requests (optional "partner_tag" in config.json)
+PA_API_PARTNER_TAG = _api_credentials.get('partner_tag') if _api_credentials else ''
 
 # Configuration validation
 
@@ -240,6 +263,10 @@ def validate_configuration():
     if ENABLE_FETCHER_BROWSER and BROWSER_TYPE not in {'chromium', 'firefox', 'webkit'}:
         errors.append(f"Invalid BROWSER_TYPE: '{BROWSER_TYPE}' - must be chromium, firefox, or webkit")
     
+    # API batching
+    if ENABLE_API_BATCH_REQUESTS and not 1 <= API_BATCH_SIZE <= PA_API_MAX_BATCH_SIZE:
+        errors.append(f"API_BATCH_SIZE must be between 1 and {PA_API_MAX_BATCH_SIZE}, got {API_BATCH_SIZE}")
+
     # Request config
     if REQUEST_DELAY < 0:
         errors.append(f"REQUEST_DELAY must be >= 0, got {REQUEST_DELAY}")
@@ -253,6 +280,8 @@ def validate_configuration():
     # Warnings
     if ENABLE_FETCHER_API and not (PA_API_ACCESS_KEY and PA_API_SECRET_KEY):
         logging.warning("[Config] PA-API enabled but credentials missing in config.json")
+    elif ENABLE_FETCHER_API and not PA_API_PARTNER_TAG:
+        logging.warning("[Config] PA-API requires a partner_tag in config.json; requests may be rejected")
     
     return True
 
