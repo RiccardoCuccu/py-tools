@@ -38,4 +38,6 @@ Each tool is self-contained and uses its own `.venv` virtual environment inside 
 
 - **[youtube_auto_playlist](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_auto_playlist/)** - Script to automatically add every new video from all YouTube subscriptions to a selected playlist.
 
+- **[youtube_unlisted_finder](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_unlisted_finder/)** - Script to scan YouTube playlists (Watch Later included) or liked videos and report the unlisted videos found.
+
 - **[youtube_video_backup](https://github.com/RiccardoCuccu/py-tools/blob/main/youtube_video_backup/)** - Script to automatically backup YouTube channel videos to a secondary private channel with full metadata preservation.
